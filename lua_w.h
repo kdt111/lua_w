@@ -196,6 +196,13 @@ namespace lua_w
 	}
 
 	//----------------------------
+	// FORWARD DECLARATION OF SOME TYPES
+	//----------------------------
+
+	class Table;
+	class Function;
+
+	//----------------------------
 	// STACK MANIPULATIONS
 	//----------------------------
 	
@@ -266,7 +273,9 @@ namespace lua_w
 		else if constexpr (std::is_same_v<value_t, std::string>)
 		{
 			if (lua_isstring(L, idx))
-				return std::move(std::string(lua_tostring(L, idx)));
+				return std::string(lua_tostring(L, idx));
+			else
+				return {};
 		}
 		else
 			internal::no_match();
@@ -296,11 +305,11 @@ namespace lua_w
 		template<typename TValue>
 		TValue pop_param_form_stack(lua_State* L)
 		{
-			// Pop from the top of the stack, for some reason (Documentation says that we should pop form the bottom)
-			// But it pops the arguments in reverse order
-			int top = lua_gettop(L);
-			std::optional<TValue> value = stack_get<TValue>(L, top);
-			lua_remove(L, top);
+			// Pop values form the stack
+			// From the bottom idx 1 is the first argument, 2 is the second...
+			std::optional<TValue> value = stack_get<TValue>(L, 1);
+			// Remove this element, it shifts everything down, so now the second argument is on the idx 1, third on idx 2 ...
+			lua_remove(L, 1);
 			// We don't check if the optional holds a value. If it doesn't then the C function can't be called anyway
 			// So there will be some kind of error
 			return value.value();
@@ -318,7 +327,7 @@ namespace lua_w
 			// The pointer was passed as light user data so we retrieve it and cast to the required type
 			FuncPtr_t<TRet, TArgs...> ptr = (FuncPtr_t<TRet, TArgs...>)lua_touserdata(L, lua_upvalueindex(1)); // C style cast cause of the void* type
 			// Make a tuple of the required arguments by expanding the pack to pop the values form the stack
-			auto args = std::make_tuple(pop_param_form_stack<TArgs>(L) ...);
+			std::tuple<TArgs...> args = { internal::pop_param_form_stack<TArgs>(L) ... };
 			// C functions can return void or one value, so we only need to take care of two things
 			if constexpr (std::is_void_v<TRet>)
 			{
@@ -401,13 +410,13 @@ namespace lua_w
 	// TABLES
 	//----------------------------
 
-	// TODO: Implement...
+	// TODO: Implement
 	
 	//----------------------------
 	// LUA FUNCTIONS OBJECTS
 	//----------------------------
 
-	// TODO: Implement...
+	// TODO: Implement
 
 	//----------------------------
 	// CLASS BINDING
