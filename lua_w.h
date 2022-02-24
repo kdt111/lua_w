@@ -10,6 +10,7 @@
 #include <tuple> // Used in: call_c_func_impl (and anything that calls them)
 #include <type_traits> // Used in: stack_push, stack_get, call_c_func_impl, call_lua_function (and anything that calls them)
 #include <string> // Used in: stack_push, stack_get (and anything that calls them)
+#include <memory> // Used in: Table class as tableKey
 
 #include <fstream> // Used only in: load_script_helper
 #include <sstream> // Used only in: load_script_helper
@@ -197,20 +198,35 @@ namespace lua_w
 
 	// Class that represents a lua table
 	// Doesn't store any data, only the required pointers to access the bound table in the lua VM
-	// TODO: The table should be able to use RAII
 	class Table
 	{
 	private:
-		Table* tableKey;
-		lua_State* L;
+		// Internal struct to hold data, it allows the table to use RAII and be shared by multiple objects
+		struct TableData
+		{
+			lua_State* L;
 
-		Table() : tableKey(this) {}
+			TableData(lua_State* L) : L(L) {}
+			
+			~TableData()
+			{
+				lua_pushlightuserdata(L, &L);
+				lua_pushnil(L);
+				lua_settable(L, LUA_REGISTRYINDEX);
+			}
+		};		
+		// The shared_ptr stores data neaded to access the table
+		// This way the object can be coppied and there is no way that something will clear the table when
+		// Some Table has this shared_ptr
+		std::shared_ptr<TableData> tableData;
+		Table() {}
+		
 	public:
 		// Constructs a new table in the provided lua state
-		Table(lua_State* L) : tableKey(this), L(L)
+		Table(lua_State* L) : tableData(std::make_shared<TableData>(L))
 		{
 			// Push the key
-			lua_pushlightuserdata(L, tableKey);
+			lua_pushlightuserdata(L, &tableData->L);
 			// Push a new table
 			lua_newtable(L);
 			// Assign this table to the registry, so we can use it later
@@ -222,14 +238,15 @@ namespace lua_w
 		// If the stateToPush is different than the state that this table is bound too the function pushes nil
 		void push_to_stack(lua_State* stateToPush) const
 		{
+			auto& L = tableData->L;
+			
 			if (L != stateToPush)
 			{
-				std::cout << "Wrong state to push\n";
 				lua_pushnil(stateToPush);
 				return;
 			}
 
-			lua_pushlightuserdata(L, tableKey);
+			lua_pushlightuserdata(L, &L);
 			lua_gettable(L, LUA_REGISTRYINDEX);
 		}
 
@@ -238,10 +255,11 @@ namespace lua_w
 		static Table create_from_stack(lua_State* L, int idx)
 		{
 			Table tab;
-			tab.tableKey = &tab;
-			tab.L = L;
+			tab.tableData = std::make_shared<TableData>(L);
+
+			auto ptr = &tab.tableData->L;
 			
-			lua_pushlightuserdata(L, tab.tableKey);
+			lua_pushlightuserdata(L, ptr);
 			// Adjust the index if it was a pseudo index
 			// We just pushed the pointer so it is now one lower from the top
 			if (idx < 0)
@@ -252,14 +270,18 @@ namespace lua_w
 			return tab;
 		}
 
-		// Removes the reference to the bound table in the lua VM
-		// For now it is required to do this manually when you are finished with creating the table
-		void free()
+		// Returns the amoun of integer indexed elements in the table
+		// This method doesn't account for anything in the table that has a different key
+		lua_Integer length() const
 		{
-			// Remove the table form the registry by settings the value of the key to nil
-			lua_pushlightuserdata(L, tableKey);
-			lua_pushnil(L);
-			lua_settable(L, LUA_REGISTRYINDEX);
+			auto& L = tableData->L;
+			
+			lua_pushlightuserdata(L, &L);
+			lua_gettable(L, LUA_REGISTRYINDEX);
+			lua_len(L, -1);
+			lua_Integer retVal = lua_tointeger(L, -1);
+			lua_pop(L, 2);
+			return retVal;
 		}
 
 		// Returns a value value form the table by the value index
@@ -267,7 +289,9 @@ namespace lua_w
 		template<typename TValue>
 		std::optional<TValue> get(lua_Number idx) const
 		{
-			lua_pushlightuserdata(L, tableKey);
+			auto& L = tableData->L;
+			
+			lua_pushlightuserdata(L, &L);
 			lua_gettable(L, LUA_REGISTRYINDEX);
 			lua_geti(L, -1, idx);
 			auto retVal = stack_get<TValue>(L, -1);
@@ -280,7 +304,9 @@ namespace lua_w
 		template<typename TValue>
 		void set(lua_Number idx, const TValue& value) const
 		{
-			lua_pushlightuserdata(L, tableKey);
+			auto& L = tableData->L;
+			
+			lua_pushlightuserdata(L, &L);
 			lua_gettable(L, LUA_REGISTRYINDEX);
 			stack_push(L, value);
 			lua_seti(L, -2, idx);
@@ -290,7 +316,9 @@ namespace lua_w
 		template<typename TValue>
 		std::optional<TValue> get(const char* key) const
 		{
-			lua_pushlightuserdata(L, tableKey);
+			auto& L = tableData->L;
+			
+			lua_pushlightuserdata(L, &L);
 			lua_gettable(L, LUA_REGISTRYINDEX);
 			lua_getfield(L, -1, key);
 			auto retVal = stack_get<TValue>(L, -1);
@@ -302,7 +330,9 @@ namespace lua_w
 		template<typename TValue>
 		void set(const char* key, const TValue& value) const
 		{
-			lua_pushlightuserdata(L, tableKey);
+			auto& L = tableData->L;
+			
+			lua_pushlightuserdata(L, &L);
 			lua_gettable(L, LUA_REGISTRYINDEX);
 			stack_push(L, value);
 			lua_setfield(L, -2, key);
