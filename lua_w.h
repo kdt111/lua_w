@@ -56,6 +56,7 @@ namespace lua_w
 	private:
 		lua_State* L;
 	public:
+		ScopedState operator=(const ScopedState&) = delete;
 		// Returns the internal lua_State object
 		inline lua_State* get_state() { return L; }
 		
@@ -151,7 +152,7 @@ namespace lua_w
 	}
 
 	//----------------------------
-	// SCRIPT EXECUTION AND ERROR HANDELING
+	// SCRIPT EXECUTION
 	//----------------------------
 	
 	// Executes the script with default error handeling
@@ -217,6 +218,9 @@ namespace lua_w
 	// Returns a value form the lua stack on the position idx if it exists or can be converted to the TValue type, otherwise returns an empty optional
 	// idx = 1 is the first element from the BOTTOM of the stack
 	// idx = -1 is the first element from the TOP of the stack
+	// WARNING!!! Be carefull when you are requesting a char* or const char*. This memory is not mamaged by C++, so they may be deleted unexpecteadly
+	// DEFINITLY DON'T MODIFY THEM
+	// The safest bet is to request a C++ string
 	template<typename TValue>
 	std::optional<TValue> stack_get(lua_State* L, int idx)
 	{
@@ -363,7 +367,9 @@ namespace lua_w
 	template<typename TValue>
 	inline void set_global(lua_State* L, const char* globalName, const TValue& value)
 	{
+		// Push the value to the stack
 		stack_push(L, value);
+		// Bind a global name to this value
 		lua_setglobal(L, globalName);
 	}
 
