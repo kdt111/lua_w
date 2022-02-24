@@ -56,7 +56,6 @@ namespace lua_w
 	private:
 		lua_State* L;
 	public:
-		ScopedState operator=(const ScopedState&) = delete;
 		// Returns the internal lua_State object
 		inline lua_State* get_state() { return L; }
 		
@@ -185,6 +184,132 @@ namespace lua_w
 	}
 
 	//----------------------------
+	// TABLES
+	//----------------------------
+
+	// Forward declaration of the stack manipulation functions (tables nead this, and stack functions also have to know how to handle tables)
+	
+	template<typename TValue>
+	void stack_push(lua_State* L, const TValue& value);
+
+	template<typename TValue>
+	std::optional<TValue> stack_get(lua_State* L, int idx);
+
+	// Class that represents a lua table
+	// Doesn't store any data, only the required pointers to access the bound table in the lua VM
+	// TODO: The table should be able to use RAII
+	class Table
+	{
+	private:
+		Table* tableKey;
+		lua_State* L;
+
+		Table() : tableKey(this) {}
+	public:
+		// Constructs a new table in the provided lua state
+		Table(lua_State* L) : tableKey(this), L(L)
+		{
+			// Push the key
+			lua_pushlightuserdata(L, tableKey);
+			// Push a new table
+			lua_newtable(L);
+			// Assign this table to the registry, so we can use it later
+			lua_settable(L, LUA_REGISTRYINDEX);
+		}
+
+		// Pushes the table to the lua stack
+		// SHOULDN'T be used on it's own
+		// If the stateToPush is different than the state that this table is bound too the function pushes nil
+		void push_to_stack(lua_State* stateToPush) const
+		{
+			if (L != stateToPush)
+			{
+				std::cout << "Wrong state to push\n";
+				lua_pushnil(stateToPush);
+				return;
+			}
+
+			lua_pushlightuserdata(L, tableKey);
+			lua_gettable(L, LUA_REGISTRYINDEX);
+		}
+
+		// Creates the table from the data on the stack
+		// SHOULDN'T be used on it's own
+		static Table create_from_stack(lua_State* L, int idx)
+		{
+			Table tab;
+			tab.tableKey = &tab;
+			tab.L = L;
+			
+			lua_pushlightuserdata(L, tab.tableKey);
+			// Adjust the index if it was a pseudo index
+			// We just pushed the pointer so it is now one lower from the top
+			if (idx < 0)
+				idx--;
+			lua_pushvalue(L, idx);
+			lua_settable(L, LUA_REGISTRYINDEX);
+			
+			return tab;
+		}
+
+		// Removes the reference to the bound table in the lua VM
+		// For now it is required to do this manually when you are finished with creating the table
+		void free()
+		{
+			// Remove the table form the registry by settings the value of the key to nil
+			lua_pushlightuserdata(L, tableKey);
+			lua_pushnil(L);
+			lua_settable(L, LUA_REGISTRYINDEX);
+		}
+
+		// Returns a value value form the table by the value index
+		// NOTE: lua tables are indexed form 1, and this function follows this convention
+		template<typename TValue>
+		std::optional<TValue> get(lua_Number idx) const
+		{
+			lua_pushlightuserdata(L, tableKey);
+			lua_gettable(L, LUA_REGISTRYINDEX);
+			lua_geti(L, -1, idx);
+			auto retVal = stack_get<TValue>(L, -1);
+			lua_pop(L, 1);
+			return retVal;
+		}
+
+		// Pushes this value to the table
+		// NOTE: lua tables are indexed form 1, and this function follows this convention
+		template<typename TValue>
+		void set(lua_Number idx, const TValue& value) const
+		{
+			lua_pushlightuserdata(L, tableKey);
+			lua_gettable(L, LUA_REGISTRYINDEX);
+			stack_push(L, value);
+			lua_seti(L, -2, idx);
+		}
+
+		// Returns a value form the table by it's string key
+		template<typename TValue>
+		std::optional<TValue> get(const char* key) const
+		{
+			lua_pushlightuserdata(L, tableKey);
+			lua_gettable(L, LUA_REGISTRYINDEX);
+			lua_getfield(L, -1, key);
+			auto retVal = stack_get<TValue>(L, -1);
+			lua_pop(L, 1);
+			return retVal;
+		}
+
+		// Pushes the value to the table with to the provided string key
+		template<typename TValue>
+		void set(const char* key, const TValue& value) const
+		{
+			lua_pushlightuserdata(L, tableKey);
+			lua_gettable(L, LUA_REGISTRYINDEX);
+			stack_push(L, value);
+			lua_setfield(L, -2, key);
+		}
+	};
+
+	//----------------------------
 	// STACK MANIPULATIONS
 	//----------------------------
 
@@ -195,7 +320,9 @@ namespace lua_w
 		// Remove references, const and volatile kewyords to better match the types
 		using value_t = std::decay_t<TValue>;
 
-		if constexpr (std::is_same_v <value_t, bool>)
+		if constexpr (std::is_same_v<value_t, Table>)
+			value.push_to_stack(L);
+		else if constexpr (std::is_same_v <value_t, bool>)
 			lua_pushboolean(L, value);
 		else if constexpr (std::is_convertible_v<value_t, lua_Number>)
 			lua_pushnumber(L, static_cast<lua_Number>(value)); // Can push anything convertible to a lua_Number (double by default)
@@ -227,7 +354,17 @@ namespace lua_w
 		// Remove references, const and volatile kewyords to better match the types
 		using value_t = std::decay_t<TValue>;
 
-		if constexpr (std::is_same_v <value_t, bool>)
+		if constexpr (std::is_same_v<value_t, Table>)
+		{
+			if (lua_istable(L, idx))
+			{
+				std::cout << "Table found!\n";
+				return Table::create_from_stack(L, idx);
+			}
+			else
+				return {};
+		}
+		else if constexpr (std::is_same_v <value_t, bool>)
 		{
 			if (lua_isboolean(L, idx))
 				return lua_toboolean(L, idx);
@@ -372,12 +509,6 @@ namespace lua_w
 		// Bind a global name to this value
 		lua_setglobal(L, globalName);
 	}
-
-	//----------------------------
-	// TABLES
-	//----------------------------
-
-	// TODO: Implement
 
 	//----------------------------
 	// LUA FUNCTIONS OBJECTS
