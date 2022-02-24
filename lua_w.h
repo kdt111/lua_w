@@ -154,35 +154,23 @@ namespace lua_w
 	// SCRIPT EXECUTION AND ERROR HANDELING
 	//----------------------------
 	
-	// Executes the state without any error handeling
-	inline void execute_string(lua_State* L, const char* string)
-	{
-		luaL_dostring(L, string);
-	}
-
 	// Executes the script with default error handeling
-	inline int execute_string_safe(lua_State* L, const char* string)
+	// The returned value is the error code. If there were no errors it will returrn LUA_OK
+	inline int execute_string(lua_State* L, const char* string)
 	{
 		luaL_loadstring(L, string);
 		return lua_pcall(L, 0, LUA_MULTRET, 0);
 	}
 
-	// Loads and executes the script from the provided file path
-	// Uses load_script_helper, to load the file
-	inline void execute_file(lua_State* L, const char* filePath)
-	{
-		execute_string(L, load_script_helper(filePath).c_str());
-	}
-
 	// Loads and executes the script from the provided file path with default error handeling
 	// Uses load_script_helper, to load the file
-	inline void execute_file_safe(lua_State* L, const char* filePath)
+	inline int execute_file(lua_State* L, const char* filePath)
 	{
-		execute_string_safe(L, load_script_helper(filePath).c_str());
+		return execute_string(L, load_script_helper(filePath).c_str());
 	}
 
 	// Pops the error message form the stack.
-	// Should only be used after calling 'execute_string_safe' when the returned value is not LUA_OK
+	// Should only be used after calling 'execute_string' when its return value is not equal to LUA_OK
 	const char* pop_error_message(lua_State* L)
 	{
 		if (lua_isstring(L, -1) && !lua_isnumber(L, -1))
@@ -196,22 +184,8 @@ namespace lua_w
 	}
 
 	//----------------------------
-	// FORWARD DECLARATION OF SOME TYPES
-	//----------------------------
-
-	class Table;
-	class Function;
-
-	//----------------------------
 	// STACK MANIPULATIONS
 	//----------------------------
-	
-	// Returns the amount of element on the current lua stack
-	inline int get_stack_size(lua_State* L)
-	{
-		// Top of the stack is the amount of elements on the stack
-		return lua_gettop(L);
-	}
 
 	// Pushes the TValue on to the stack (can push numbers, bools, strings FOR NOW)
 	template<typename TValue>
@@ -219,7 +193,7 @@ namespace lua_w
 	{
 		// Remove references, const and volatile kewyords to better match the types
 		using value_t = std::decay_t<TValue>;
-		
+
 		if constexpr (std::is_same_v <value_t, bool>)
 			lua_pushboolean(L, value);
 		else if constexpr (std::is_convertible_v<value_t, lua_Number>)
@@ -248,7 +222,7 @@ namespace lua_w
 	{
 		// Remove references, const and volatile kewyords to better match the types
 		using value_t = std::decay_t<TValue>;
-		
+
 		if constexpr (std::is_same_v <value_t, bool>)
 		{
 			if (lua_isboolean(L, idx))
@@ -279,19 +253,6 @@ namespace lua_w
 		}
 		else
 			internal::no_match();
-	}
-
-	// Pops the 'amount' of values from the stack's top (removes them) 
-	inline void stack_pop(lua_State* L, int amount)
-	{
-		lua_pop(L, amount);
-	}
-
-	// Removes the idx value from the stack and pushes the rest of the values down
-	// This function doesn't accept negative values (calling this with -1 to remove the top element will not work)
-	inline void stack_remove(lua_State* L, int idx)
-	{
-		lua_remove(L, idx);
 	}
 
 	//----------------------------
@@ -378,7 +339,7 @@ namespace lua_w
 		// Assign the pushed closure a name to make it a global function
 		lua_setglobal(L, funcName);
 	}
-
+	
 	//----------------------------
 	// GLOBAL VALUES MANIPULATIONS
 	//----------------------------
@@ -394,7 +355,7 @@ namespace lua_w
 		// No need to check for nil since it is handles in the stack_get function (by returning an empty optional)
 		auto value = stack_get<TValue>(L, -1);
 		// Pop the value of the stack, so it doesn't stay there
-		stack_pop(L, 1);
+		lua_pop(L, 1);
 		return value;
 	}
 
@@ -411,7 +372,7 @@ namespace lua_w
 	//----------------------------
 
 	// TODO: Implement
-	
+
 	//----------------------------
 	// LUA FUNCTIONS OBJECTS
 	//----------------------------
