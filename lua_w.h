@@ -24,31 +24,30 @@ namespace lua_w
 		// Helper for failing type matching in push and get templates
 		template<bool flag = false>
 		void no_match() { static_assert(flag, "No matching type found"); }
-
-		// Type alias for transforming two template arguments to a function pointer
-		template<typename TRet, typename... TArgs>
-		using FuncPtr_t = TRet(*)(TArgs...);
 	}
 
 	//----------------------------
 	// HELPER FUNCTIONS AND OBJECTS
 	//----------------------------
 
-	enum Libs : uint16_t
+	namespace Libs
 	{
-		none = 0,
-		base = 1 << 1,
-		coroutine = 1 << 2,
-		debug = 1 << 3,
-		io = 1 << 4,
-		math = 1 << 5,
-		os = 1 << 6,
-		package = 1 << 7,
-		string = 1 << 8,
-		table = 1 << 9,
-		utf8 = 1 << 10,
-		all = ((1 << 16) - 1)
-	};
+		enum Libs : uint16_t
+		{
+			none = 0,
+			base = 1 << 1,
+			coroutine = 1 << 2,
+			debug = 1 << 3,
+			io = 1 << 4,
+			math = 1 << 5,
+			os = 1 << 6,
+			package = 1 << 7,
+			string = 1 << 8,
+			table = 1 << 9,
+			utf8 = 1 << 10,
+			all = ((1 << 16) - 1)
+		};
+	}
 	
 	// A class that will open and close the state when the lifetime of the enclosing scope will be finished
 	// eg. This State will be closed when the object that holds this State will be deleted
@@ -225,12 +224,10 @@ namespace lua_w
 		// Constructs a new table in the provided lua state
 		Table(lua_State* L) : tableData(std::make_shared<TableData>(L))
 		{
-			// Push the key
-			lua_pushlightuserdata(L, &tableData->L);
 			// Push a new table
 			lua_newtable(L);
 			// Assign this table to the registry, so we can use it later
-			lua_settable(L, LUA_REGISTRYINDEX);
+			lua_rawsetp(L, LUA_REGISTRYINDEX, &tableData->L);
 		}
 
 		// Pushes the table to the lua stack
@@ -246,8 +243,7 @@ namespace lua_w
 				return;
 			}
 
-			lua_pushlightuserdata(L, &L);
-			lua_gettable(L, LUA_REGISTRYINDEX);
+			lua_rawgetp(L, LUA_REGISTRYINDEX, &L);
 		}
 
 		// Creates the table from the data on the stack
@@ -259,26 +255,28 @@ namespace lua_w
 
 			auto ptr = &tab.tableData->L;
 			
-			lua_pushlightuserdata(L, ptr);
 			// Adjust the index if it was a pseudo index
 			// We just pushed the pointer so it is now one lower from the top
 			if (idx < 0)
 				idx--;
 			lua_pushvalue(L, idx);
-			lua_settable(L, LUA_REGISTRYINDEX);
+			lua_rawsetp(L, LUA_REGISTRYINDEX, ptr);
 			
 			return tab;
 		}
 
 		// Returns the amoun of integer indexed elements in the table
 		// This method doesn't account for anything in the table that has a different key
-		lua_Integer length() const
+		// If raw is true then the calculation skips all metamethods
+		lua_Integer length(bool raw = false) const
 		{
 			auto& L = tableData->L;
 			
-			lua_pushlightuserdata(L, &L);
-			lua_gettable(L, LUA_REGISTRYINDEX);
-			lua_len(L, -1);
+			lua_rawgetp(L, LUA_REGISTRYINDEX, &L);
+			if (raw)
+				lua_rawlen(L, -1);
+			else
+				lua_len(L, -1);
 			lua_Integer retVal = lua_tointeger(L, -1);
 			lua_pop(L, 2);
 			return retVal;
@@ -286,14 +284,17 @@ namespace lua_w
 
 		// Returns a value value form the table by the value index
 		// NOTE: lua tables are indexed form 1, and this function follows this convention
+		// If raw is true then the calculation skips all metamethods
 		template<typename TValue>
-		std::optional<TValue> get(lua_Number idx) const
+		std::optional<TValue> get(lua_Number idx, bool raw = false) const
 		{
 			auto& L = tableData->L;
 			
-			lua_pushlightuserdata(L, &L);
-			lua_gettable(L, LUA_REGISTRYINDEX);
-			lua_geti(L, -1, idx);
+			lua_rawgetp(L, LUA_REGISTRYINDEX, &L);
+			if (raw)
+				lua_rawgeti(L, -1, idx);
+			else
+				lua_geti(L, -1, idx);
 			auto retVal = stack_get<TValue>(L, -1);
 			lua_pop(L, 1);
 			return retVal;
@@ -301,41 +302,57 @@ namespace lua_w
 
 		// Pushes this value to the table
 		// NOTE: lua tables are indexed form 1, and this function follows this convention
+		// If raw is true then the calculation skips all metamethods
 		template<typename TValue>
-		void set(lua_Number idx, const TValue& value) const
+		void set(lua_Number idx, const TValue& value, bool raw = false) const
 		{
 			auto& L = tableData->L;
-			
-			lua_pushlightuserdata(L, &L);
-			lua_gettable(L, LUA_REGISTRYINDEX);
+
+			lua_rawgetp(L, LUA_REGISTRYINDEX, &L);
 			stack_push(L, value);
-			lua_seti(L, -2, idx);
+			if (raw)
+				lua_rawseti(L, -2, idx);
+			else
+				lua_seti(L, -2, idx);
 		}
 
 		// Returns a value form the table by it's string key
+		// If raw is true then the calculation skips all metamethods
 		template<typename TValue>
-		std::optional<TValue> get(const char* key) const
+		std::optional<TValue> get(const char* key, bool raw = false) const
 		{
 			auto& L = tableData->L;
 			
-			lua_pushlightuserdata(L, &L);
-			lua_gettable(L, LUA_REGISTRYINDEX);
-			lua_getfield(L, -1, key);
+			lua_rawgetp(L, LUA_REGISTRYINDEX, &L);
+			if (raw)
+			{
+				// Push as a literal (to save lua form copping something that it will pop in the next instruction)
+				lua_pushstring(L, key);
+				lua_rawget(L, -2);
+			}
+			else
+				lua_getfield(L, -1, key);
 			auto retVal = stack_get<TValue>(L, -1);
 			lua_pop(L, 1);
 			return retVal;
 		}
 
 		// Pushes the value to the table with to the provided string key
+		// If raw is true then the calculation skips all metamethods
 		template<typename TValue>
-		void set(const char* key, const TValue& value) const
+		void set(const char* key, const TValue& value, bool raw = false) const
 		{
 			auto& L = tableData->L;
 			
-			lua_pushlightuserdata(L, &L);
-			lua_gettable(L, LUA_REGISTRYINDEX);
+			lua_rawgetp(L, LUA_REGISTRYINDEX, &L);
 			stack_push(L, value);
-			lua_setfield(L, -2, key);
+			if (raw)
+			{
+				lua_pushstring(L, key);
+				lua_rawset(L, -3);
+			}
+			else
+				lua_setfield(L, -2, key);
 		}
 	};
 
@@ -343,7 +360,7 @@ namespace lua_w
 	// STACK MANIPULATIONS
 	//----------------------------
 
-	// Pushes the TValue on to the stack (can push numbers, bools, strings FOR NOW)
+	// Pushes the TValue on to the stack (can push numbers, bools, strings, cstrings, lua_w::Tables)
 	template<typename TValue>
 	void stack_push(lua_State* L, const TValue& value)
 	{
@@ -433,6 +450,10 @@ namespace lua_w
 	// Some more internal data
 	namespace internal
 	{
+		// Type alias for transforming two template arguments to a function pointer
+		template<typename TRet, typename... TArgs>
+		using FuncPtr_t = TRet(*)(TArgs...);
+		
 		// Pops parameters form the stack to call a C function with them
 		template<typename TValue>
 		TValue pop_param_form_stack(lua_State* L)
@@ -510,7 +531,14 @@ namespace lua_w
 		// Assign the pushed closure a name to make it a global function
 		lua_setglobal(L, funcName);
 	}
-	
+
+	// Registers a function to lua with the classic signature (returning an int and taking a lua_State pointer as the only argument)
+	// You will have to handle taking the arguments, and pushing return values manually, but it gives you more controll over how everything is handled
+	void register_c_function(lua_State* L, const char* funcName, internal::FuncPtr_t<int, lua_State*> funcPtr)
+	{
+		lua_register(L, funcName, funcPtr);
+	}
+
 	//----------------------------
 	// GLOBAL VALUES MANIPULATIONS
 	//----------------------------
@@ -549,8 +577,20 @@ namespace lua_w
 	//----------------------------
 	// CLASS BINDING
 	//----------------------------
+	// Materials: http://lua-users.org/wiki/CppObjectBinding
+	
+	// Internal stuff for class binding
+	namespace internal
+	{
+		// A pointer to a member function type (every class function that is not static is a member)
+		// Static functions should use Funt
+		template<class TClass, typename TRet, typename... TArgs>
+		using MemberFuncPtr_t = TRet(TClass::*)(TArgs...);
 
-	// TODO: Implement...
+		// A pointer to a member variable type
+		template<class TClass, typename TValue>
+		using MemberDataPtr_t = TValue(TClass::*);
+	}
 
 	//----------------------------
 	// COROUTINES
