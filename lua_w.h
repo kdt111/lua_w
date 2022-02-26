@@ -4,13 +4,14 @@
 #ifndef LUA_W_INCLUDE_H
 #define LUA_W_INCLUDE_H
 
-#include <lua.hpp>
+#include <lua.hpp> // Lua header
 
 #include <optional> // Used in: stack_get, call_lua_function, get_global (and anything that calls them)
 #include <tuple> // Used in: call_c_func_impl (and anything that calls them)
 #include <type_traits> // Used in: stack_push, stack_get, call_c_func_impl, call_lua_function (and anything that calls them)
 #include <string> // Used in: stack_push, stack_get (and anything that calls them)
 #include <memory> // Used in: Table class as tableKey
+#include <new> // Used in TypeWrapper (for inplace new)
 
 #include <fstream> // Used only in: load_script_helper
 #include <sstream> // Used only in: load_script_helper
@@ -61,10 +62,12 @@ namespace lua_w
 		
 		ScopedState() { L = luaL_newstate(); }
 		ScopedState(lua_State*&& state) { L = state; }
+		ScopedState(const ScopedState&) = delete;
 		~ScopedState() { lua_close(L); }
 
 		// Returns the internal lua_State object
 		inline lua_State* operator*() { return L; }
+		ScopedState& operator=(const ScopedState& other) = delete;
 	};
 
 	// Creates a new lua state with libs provided as a bit mask
@@ -209,9 +212,8 @@ namespace lua_w
 			
 			~TableData()
 			{
-				lua_pushlightuserdata(L, &L);
 				lua_pushnil(L);
-				lua_settable(L, LUA_REGISTRYINDEX);
+				lua_rawsetp(L, LUA_REGISTRYINDEX, &L);
 			}
 		};		
 		// The shared_ptr stores data neaded to access the table
@@ -359,6 +361,7 @@ namespace lua_w
 	//----------------------------
 	// STACK MANIPULATIONS
 	//----------------------------
+	// TODO: Allow pushing and getting pointers to C++ objects
 
 	// Pushes the TValue on to the stack (can push numbers, bools, strings, cstrings, lua_w::Tables)
 	template<typename TValue>
@@ -371,7 +374,7 @@ namespace lua_w
 			value.push_to_stack(L);
 		else if constexpr (std::is_same_v <value_t, bool>)
 			lua_pushboolean(L, value);
-		else if constexpr (std::is_convertible_v<value_t, lua_Number>)
+		else if constexpr (std::is_arithmetic_v<value_t>)
 			lua_pushnumber(L, static_cast<lua_Number>(value)); // Can push anything convertible to a lua_Number (double by default)
 		else if constexpr (std::is_same_v <value_t, const char*> || std::is_same_v <value_t, char*>) // can push both const char* and char* (lua makes a copy of the sting)
 			lua_pushstring(L, value);
@@ -379,14 +382,6 @@ namespace lua_w
 			lua_pushstring(L, value.c_str());
 		else
 			internal::no_match(); // No matching type was found
-	}
-
-	// Pushes multiple values on to the stack (can push anything that stack_push can)
-	template<typename... TValue>
-	void stack_push_multiple(lua_State* L, TValue... values)
-	{
-		// Using a C++17 fold expression to push every type and value
-		(stack_push(L, values), ...);
 	}
 
 	// Returns a value form the lua stack on the position idx if it exists or can be converted to the TValue type, otherwise returns an empty optional
@@ -418,7 +413,7 @@ namespace lua_w
 			else
 				return {};
 		}
-		else if constexpr (std::is_convertible_v<value_t, lua_Number>)
+		else if constexpr (std::is_arithmetic_v<value_t>)
 		{
 			if (lua_isnumber(L, idx))
 				return static_cast<value_t>(lua_tonumber(L, idx));
@@ -453,6 +448,14 @@ namespace lua_w
 		// Type alias for transforming two template arguments to a function pointer
 		template<typename TRet, typename... TArgs>
 		using FuncPtr_t = TRet(*)(TArgs...);
+
+		// Pushes multiple values on to the stack (can push anything that stack_push can)
+		template<typename... TValue>
+		void stack_push_multiple(lua_State* L, TValue... values)
+		{
+			// Using a C++17 fold expression to push every type and value
+			(stack_push(L, values), ...);
+		}
 		
 		// Pops parameters form the stack to call a C function with them
 		template<typename TValue>
@@ -467,36 +470,6 @@ namespace lua_w
 			// So there will be some kind of error
 			return value.value();
 		}
-
-		// The function that will be called by the lua VM. 
-		// It collects the passed arguments from the stack
-		// Calls the bound C function
-		// And passed it's return value back to the lua VM
-		template<typename TRet, typename... TArgs>
-		int call_c_func_impl(lua_State* L)
-		{			
-			// Retrieve the pointer to the C function form the upvalues that were passed to lua when this closure was created
-			// Explanation - https://www.lua.org/pil/27.3.3.html
-			// The pointer was passed as light user data so we retrieve it and cast to the required type
-			FuncPtr_t<TRet, TArgs...> ptr = (FuncPtr_t<TRet, TArgs...>)lua_touserdata(L, lua_upvalueindex(1)); // C style cast cause of the void* type
-			// Make a tuple of the required arguments by expanding the pack to pop the values form the stack
-			std::tuple<TArgs...> args = { internal::pop_param_form_stack<TArgs>(L) ... };
-			// C functions can return void or one value, so we only need to take care of two things
-			if constexpr (std::is_void_v<TRet>)
-			{
-				// If return type is void just call the function using apply
-				std::apply(ptr, args);
-				return 0; // Returning 0 means not leaving anything on the stack
-			}
-			else
-			{
-				// TODO: handle functions returning pointers to common types
-				TRet retVal = std::apply(ptr, args);
-				stack_push<TRet>(L, retVal);
-				return 1; // We leave one value on the stack
-			}
-			// TODO: Handle functions returning tuples
-		}
 	}
 
 	// Calls a lua function with the arguments and an expected return type (either something or void)
@@ -507,7 +480,7 @@ namespace lua_w
 		// Get function's name
 		lua_getglobal(L, funcName);
 		// Push all of the arguments
-		PushMultiple(L, funcArgs...);
+		internal::stack_push_multiple(L, funcArgs...);
 		// handle return value
 		if constexpr (std::is_void_v<TRet>)
 			lua_call(L, sizeof...(funcArgs), 0); // Take nothing if void is expected
@@ -527,7 +500,30 @@ namespace lua_w
 		// Register the function as a C closure (explanation - https://www.lua.org/pil/27.3.3.html)
 		// The gist of it is that the call_c_func_impl will be able to retrive the pushed function pointer using upvalues
 		// And will know what C function to call
-		lua_pushcclosure(L, &internal::call_c_func_impl<TRet, TArgs...>, 1);
+		lua_pushcclosure(L, [](lua_State* L) -> int
+			{
+				// Retrieve the pointer to the C function form the upvalues that were passed to lua when this closure was created
+				// You can think of upvalues as C++ lambda captures
+				// Explanation - https://www.lua.org/pil/27.3.3.html
+				// The pointer was passed as light user data so we retrieve it and cast to the required type
+				internal::FuncPtr_t<TRet, TArgs...> ptr = (internal::FuncPtr_t<TRet, TArgs...>)lua_touserdata(L, lua_upvalueindex(1)); // C style cast cause of the void* type
+				// Make a tuple of the required arguments by expanding the pack to pop the values form the stack
+				std::tuple<TArgs...> args = { internal::pop_param_form_stack<TArgs>(L) ... };
+				// C functions can return void or one value, so we only need to take care of two things
+				if constexpr (std::is_void_v<TRet>)
+				{
+					// If return type is void just call the function using apply
+					std::apply(ptr, args);
+					return 0; // Returning 0 means not leaving anything on the stack
+				}
+				else
+				{
+					// TODO: handle functions returning pointers to common types
+					TRet retVal = std::apply(ptr, args);
+					stack_push<TRet>(L, retVal);
+					return 1; // We leave one value on the stack
+				}
+			}, 1);
 		// Assign the pushed closure a name to make it a global function
 		lua_setglobal(L, funcName);
 	}
@@ -540,7 +536,7 @@ namespace lua_w
 	}
 
 	//----------------------------
-	// GLOBAL VALUES MANIPULATIONS
+	// GLOBAL VALUES
 	//----------------------------
 
 	// Attempts to get a global value form the lua VM. If the value is not found or the type doesn't match then returns a empty optional
@@ -578,18 +574,195 @@ namespace lua_w
 	// CLASS BINDING
 	//----------------------------
 	// Materials: http://lua-users.org/wiki/CppObjectBinding
-	
+	// https://www.youtube.com/playlist?list=PLLwK93hM93Z3nhfJyRRWGRXHaXgNX0Itk
+	// TODO: Add operators, some reflection???, optional inheritance detection
+
 	// Internal stuff for class binding
 	namespace internal
 	{
 		// A pointer to a member function type (every class function that is not static is a member)
-		// Static functions should use Funt
+		// Static functions should use FuncPtr_t
 		template<class TClass, typename TRet, typename... TArgs>
 		using MemberFuncPtr_t = TRet(TClass::*)(TArgs...);
 
 		// A pointer to a member variable type
 		template<class TClass, typename TValue>
 		using MemberDataPtr_t = TValue(TClass::*);
+
+		// A pointer to a const member function
+		template<class TClass, typename TRet, typename... TArgs>
+		using MemberConstFuncPtr_t = TRet(TClass::*)(TArgs...) const;
+
+		// A storage struct for member function pointers (they are bigger than regular pointers)
+		template<class TClass, typename TRet, typename... TArgs>
+		struct MemberFuncPtrStore
+		{
+			MemberFuncPtr_t<TClass, TRet, TArgs...> ptr;
+		};
+
+		// A storage struct for const member function pointers (they are bigger than regular pointers)
+		template<class TClass, typename TRet, typename... TArgs>
+		struct MemberConstFuncPtrStore
+		{
+			MemberConstFuncPtr_t<TClass, TRet, TArgs...> ptr;
+		};
+
+		// Class for wrapping a type to be used in lua
+		// You don't need to store objects of this class, just call the register_type function
+		template<class TClass>
+		class TypeWrapper
+		{
+		private:
+			lua_State* L;
+			const char* typeName;
+		public:
+			TypeWrapper(lua_State* L, const char* name) : typeName(name), L(L)
+			{
+				// Check if the type exists
+				lua_getglobal(L, name);
+				if (lua_istable(L, -1))
+				{
+					// If there is a global table named the same as this type, we assume that this type is already registered
+					// Pop the value to clear the stack and return form the constructor
+					lua_pop(L, 1);
+					return;
+				}
+				
+				lua_newtable(L); // Create a new table for the type
+				lua_pushvalue(L, -1); // Push the value again, as a reference to the main table
+				lua_setglobal(L, name); // Set the global (as the type table)
+
+				luaL_newmetatable(L, name); // Register a metatable for the type
+				lua_pushvalue(L, -2);
+				lua_setfield(L, -2, "__index"); // Set the type table as the __index function (objects will look for method in this table)
+
+				// Add a destructor in the __gc metamethod if the object requires it
+				if constexpr (!std::is_trivially_destructible_v<TClass>)
+				{
+					lua_pushcfunction(L, [](lua_State* L) -> int
+						{
+							TClass* ptr = (TClass*)lua_touserdata(L, 1);
+							ptr->~TClass();
+							return 0;
+						});
+					lua_setfield(L, -2, "__gc"); // Set the __gc metatable field to the destructor call
+				}
+
+				lua_pop(L, 3); // Pop the type table, the metatable, and the nil that was given when checking if type was registerd
+			}
+
+			// Adds a constructor with the specified types
+			// Constructors should be added last
+			// There is support for only one constructor for now
+			template<typename... TArgs>
+			void add_constructor()
+			{
+				// Get the type table and prepare the the key 'new' to add to it (Objects are created by calling TypeName.new(args...))
+				lua_getglobal(L, typeName);
+				lua_pushliteral(L, "new");
+				lua_pushstring(L, typeName); // Push the name of the type as a upvalue to the closure (it is neaded in the constructor to assign a metatable to the created object)
+				lua_pushcclosure(L, [](lua_State* L) -> int
+					{
+						const char* typeName = lua_tostring(L, lua_upvalueindex(1)); // Get the type name from the first upvalue
+						TClass* ptr = (TClass*)lua_newuserdata(L, sizeof(TClass)); // Allocate memory for the object
+						new(ptr) TClass{ internal::pop_param_form_stack<TArgs>(L)... }; // Call a inplace new constructor (Creates the object on the specified addres)
+						luaL_getmetatable(L, typeName); // Get the metatable and assign it to the created object
+						lua_setmetatable(L, -2);
+						return 1;
+					}, 1);
+				lua_rawset(L, -3);
+				lua_pop(L, 1); // Pop the type table
+			}
+
+			// Registers a nonconst member function to lua
+			template<typename TRet, typename... TArgs>
+			TypeWrapper& add_method(const char* name, internal::MemberFuncPtr_t<TClass, TRet, TArgs...> methodPtr)
+			{
+				lua_getglobal(L, typeName); // Get the type table
+				lua_pushstring(L, name); // Push the name of the method
+
+				// Create a userdata store for a member function pointer
+				// They are bigger than regular pointers (so we store them in a struct)
+				// In GCC 11.2.0 a void* takes 8 bytes, and a member pointer takes 16 bytes, so we can't store this in a lightuserdata
+				auto store = (internal::MemberFuncPtrStore<TClass, TRet, TArgs...>*)lua_newuserdata(L, sizeof(internal::MemberFuncPtrStore<TClass, TRet, TArgs...>));
+				store->ptr = methodPtr;
+
+				// We will call the method as a closure (so we can take the member method pointer)
+				lua_pushcclosure(L, [](lua_State* L) -> int
+					{
+						// Get the pointer store form the upvalues
+						auto methodPtr = ((internal::MemberFuncPtrStore<TClass, TRet, TArgs...>*)lua_touserdata(L, lua_upvalueindex(1)))->ptr;
+						TClass* obj = (TClass*)lua_touserdata(L, 1);
+						lua_remove(L, 1); // Pop the object pointer form the stack, so we are only left with the arguments on it (we collect arguments by goint throught the stack form the begining)
+						std::tuple<TArgs...> args = { pop_param_form_stack<TArgs>(L) ... }; // pop the arguments into a tuple
+						if constexpr (std::is_void_v<TRet>)
+						{
+							// Concatenate the arguments tuple with the object pointer to know on what object to call the method
+							std::apply(methodPtr, std::tuple_cat(std::make_tuple(obj), args));
+							return 0;
+						}
+						else
+						{
+							// Concatenating is the same
+							// Returning a value works the same as in calling regular function
+							TRet retVal = std::apply(methodPtr, std::tuple_cat(std::make_tuple(obj), args));
+							stack_push(L, retVal);
+							return 1;
+						}
+					}, 1);
+				// Raw set the method to the type table
+				lua_rawset(L, -3);
+				return *this;
+			}
+
+			// registers a const member function to lua
+			template<typename TRet, typename... TArgs>
+			TypeWrapper& add_const_method(const char* name, internal::MemberConstFuncPtr_t<TClass, TRet, TArgs...> methodPtr)
+			{
+				lua_getglobal(L, typeName); // Get the type table
+				lua_pushstring(L, name); // Push the name of the method
+
+				// Create a userdata store for a member function pointer
+				// They are bigger than regular pointers (so we store them in a struct)
+				// In GCC 11.2.0 a void* takes 8 bytes, and a member pointer takes 16 bytes, so we can't store this in a lightuserdata
+				auto store = (internal::MemberConstFuncPtrStore<TClass, TRet, TArgs...>*)lua_newuserdata(L, sizeof(internal::MemberConstFuncPtrStore<TClass, TRet, TArgs...>));
+				store->ptr = methodPtr;
+
+				// We will call the method as a closure (so we can take the member method pointer)
+				lua_pushcclosure(L, [](lua_State* L) -> int
+					{
+						// Get the pointer store form the upvalues
+						auto methodPtr = ((internal::MemberConstFuncPtrStore<TClass, TRet, TArgs...>*)lua_touserdata(L, lua_upvalueindex(1)))->ptr;
+						TClass* obj = (TClass*)lua_touserdata(L, 1);
+						lua_remove(L, 1); // Pop the object pointer form the stack, so we are only left with the arguments on it (we collect arguments by goint throught the stack form the begining)
+						std::tuple<TArgs...> args = { pop_param_form_stack<TArgs>(L) ... }; // pop the arguments into a tuple
+						if constexpr (std::is_void_v<TRet>)
+						{
+							// Concatenate the arguments tuple with the object pointer to know on what object to call the method
+							std::apply(methodPtr, std::tuple_cat(std::make_tuple(obj), args));
+							return 0;
+						}
+						else
+						{
+							// Concatenating is the same
+							// Returning a value works the same as in calling regular function
+							TRet retVal = std::apply(methodPtr, std::tuple_cat(std::make_tuple(obj), args));
+							stack_push(L, retVal);
+							return 1;
+						}
+					}, 1);
+				// Raw set the method to the type table
+				lua_rawset(L, -3);
+				return *this;
+			}
+		};
+	}
+
+	// Registers a C++ type in the lua VM
+	template<class TClass>
+	internal::TypeWrapper<TClass> register_type(lua_State* L, const char* typeName)
+	{
+		return internal::TypeWrapper<TClass>(L, typeName);
 	}
 
 	//----------------------------
