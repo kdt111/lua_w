@@ -12,6 +12,7 @@
 #include <string> // Used in: stack_push, stack_get (and anything that calls them)
 #include <memory> // Used in: Table class as tableKey
 #include <new> // Used in TypeWrapper (for inplace new)
+#include <utility> // Used in TypeWrapper (for checking if operator overloads exist)
 
 #include <fstream> // Used only in: load_script_helper
 #include <sstream> // Used only in: load_script_helper
@@ -92,6 +93,7 @@ namespace lua_w
 	lua_State* new_state_with_libs(uint16_t libs)
 	{		
 		lua_State* L = luaL_newstate();
+		int popCount = 0;
 		if (libs == Libs::all)
 		{
 			luaL_openlibs(L);
@@ -103,53 +105,54 @@ namespace lua_w
 		if (libs & Libs::base)
 		{
 			luaL_requiref(L, LUA_GNAME, luaopen_base, 1);
-			lua_pop(L, 1);
+			++popCount;
 		}
 		if (libs & Libs::coroutine)
 		{
 			luaL_requiref(L, LUA_COLIBNAME, luaopen_coroutine, 1);
-			lua_pop(L, 1);
+			++popCount;
 		}
 		if (libs & Libs::debug)
 		{
 			luaL_requiref(L, LUA_DBLIBNAME, luaopen_debug, 1);
-			lua_pop(L, 1);
+			++popCount;
 		}
 		if (libs & Libs::io)
 		{
 			luaL_requiref(L, LUA_IOLIBNAME, luaopen_io, 1);
-			lua_pop(L, 1);
+			++popCount;
 		}
 		if (libs & Libs::math)
 		{
 			luaL_requiref(L, LUA_MATHLIBNAME, luaopen_math, 1);
-			lua_pop(L, 1);
+			++popCount;
 		}	
 		if (libs & Libs::os)
 		{
 			luaL_requiref(L, LUA_OSLIBNAME, luaopen_os, 1);
-			lua_pop(L, 1);
+			++popCount;
 		}
 		if (libs & Libs::package)
 		{
 			luaL_requiref(L, LUA_LOADLIBNAME, luaopen_package, 1);
-			lua_pop(L, 1);
+			++popCount;
 		}
 		if (libs & Libs::string)
 		{
 			luaL_requiref(L, LUA_STRLIBNAME, luaopen_string, 1);
-			lua_pop(L, 1);
+			++popCount;
 		}
 		if (libs & Libs::table)
 		{
 			luaL_requiref(L, LUA_TABLIBNAME, luaopen_table, 1);
-			lua_pop(L, 1);
+			++popCount;
 		}
 		if (libs & Libs::utf8)
 		{
 			luaL_requiref(L, LUA_UTF8LIBNAME, luaopen_utf8, 1);
-			lua_pop(L, 1);
+			++popCount;
 		}
+		lua_pop(L, popCount);
 		return L;
 	}
 
@@ -631,8 +634,7 @@ namespace lua_w
 	//----------------------------
 	// Materials: http://lua-users.org/wiki/CppObjectBinding
 	// https://www.youtube.com/playlist?list=PLLwK93hM93Z3nhfJyRRWGRXHaXgNX0Itk
-	// TODO: Add operators, some reflection???, optional inheritance detection
-	// A instance of operator for checking types in lua
+	// TODO: Add operators
 
 	// Internal stuff for class binding
 	namespace internal
@@ -663,6 +665,43 @@ namespace lua_w
 		{
 			MemberConstFuncPtr_t<TClass, TRet, TArgs...> ptr;
 		};
+
+		// SFINE variables for adding operators
+		
+		template<class, class = void>
+		constexpr bool has_add_v = false;
+		template<class T>
+		constexpr bool has_add_v<T, std::void_t<decltype(std::declval<T>() + std::declval<T>())>> = std::is_same_v<decltype(std::declval<T>() + std::declval<T>()), T>;
+
+		template<class, class = void>
+		constexpr bool has_sub_v = false;
+		template<class T>
+		constexpr bool has_sub_v<T, std::void_t<decltype(std::declval<T>() - std::declval<T>())>> = std::is_same_v<decltype(std::declval<T>() - std::declval<T>()), T>;
+
+		template<class, class = void>
+		constexpr bool has_mult_v = false;
+		template<class T>
+		constexpr bool has_mult_v<T, std::void_t<decltype(std::declval<T>() * std::declval<T>())>> = std::is_same_v<decltype(std::declval<T>() * std::declval<T>()), T>;
+
+		template<class, class = void>
+		constexpr bool has_div_v = false;
+		template<class T>
+		constexpr bool has_div_v<T, std::void_t<decltype(std::declval<T>() / std::declval<T>())>> = std::is_same_v<decltype(std::declval<T>() / std::declval<T>()), T>;
+
+		template<class, class = void>
+		constexpr bool has_eq_v = false;
+		template<class T>
+		constexpr bool has_eq_v<T, std::void_t<decltype(std::declval<T>() == std::declval<T>())>> = std::is_same_v<decltype(std::declval<T>() == std::declval<T>()), bool>;
+
+		template<class, class = void>
+		constexpr bool has_lt_v = false;
+		template<class T>
+		constexpr bool has_lt_v<T, std::void_t<decltype(std::declval<T>() < std::declval<T>())>> = std::is_same_v<decltype(std::declval<T>() == std::declval<T>()), bool>;
+
+		template<class, class = void>
+		constexpr bool has_lte_v = false;
+		template<class T>
+		constexpr bool has_lte_v<T, std::void_t<decltype(std::declval<T>() <= std::declval<T>())>> = std::is_same_v<decltype(std::declval<T>() == std::declval<T>()), bool>;
 
 		// Class for wrapping a type to be used in lua
 		// You don't need to store objects of this class, just call the register_type function
@@ -730,6 +769,106 @@ namespace lua_w
 					});
 				lua_rawset(L, -3);
 				lua_pop(L, 1); // Pop the type table
+			}
+
+			// Adds detected operators to the type
+			// For a operator to be detected it has to take this type as the right and left side of the operator
+			TypeWrapper& add_detected_operators()
+			{
+				luaL_getmetatable(L, TClass::lua_type_name());
+
+				// Register the add operator
+				if constexpr (has_add_v<TClass>)
+				{
+					lua_pushcfunction(L, [](lua_State* L) -> int
+						{
+							TClass* lhs = (TClass*)lua_touserdata(L, 1);
+							TClass* rhs = (TClass*)lua_touserdata(L, 2);
+							stack_push<TClass>(L, *lhs + *rhs);
+							return 1;
+						});
+					lua_setfield(L, -2, "__add");
+				}
+
+				// Register the subtract operator
+				if constexpr (has_sub_v<TClass>)
+				{
+					lua_pushcfunction(L, [](lua_State* L) -> int
+						{
+							TClass* lhs = (TClass*)lua_touserdata(L, 1);
+							TClass* rhs = (TClass*)lua_touserdata(L, 2);
+							stack_push<TClass>(L, *lhs - *rhs);
+							return 1;
+						});
+					lua_setfield(L, -2, "__sub");
+				}
+
+				// Register the multiply operator
+				if constexpr (has_mult_v<TClass>)
+				{
+					lua_pushcfunction(L, [](lua_State* L) -> int
+						{
+							TClass* lhs = (TClass*)lua_touserdata(L, 1);
+							TClass* rhs = (TClass*)lua_touserdata(L, 2);
+							stack_push<TClass>(L, *lhs * *rhs);
+							return 1;
+						});
+					lua_setfield(L, -2, "__mul");
+				}
+
+				// Register the multiply operator
+				if constexpr (has_div_v<TClass>)
+				{
+					lua_pushcfunction(L, [](lua_State* L) -> int
+						{
+							TClass* lhs = (TClass*)lua_touserdata(L, 1);
+							TClass* rhs = (TClass*)lua_touserdata(L, 2);
+							stack_push<TClass>(L, *lhs / *rhs);
+							return 1;
+						});
+					lua_setfield(L, -2, "__div");
+				}
+
+				// Register the equlality operator
+				if constexpr (has_eq_v<TClass>)
+				{
+					lua_pushcfunction(L, [](lua_State* L) -> int
+						{
+							TClass* lhs = (TClass*)lua_touserdata(L, 1);
+							TClass* rhs = (TClass*)lua_touserdata(L, 2);
+							lua_pushboolean(L, *lhs == *rhs);
+							return 1;
+						});
+					lua_setfield(L, -2, "__eq");
+				}
+
+				// Register the less-than operator
+				if constexpr (has_lt_v<TClass>)
+				{
+					lua_pushcfunction(L, [](lua_State* L) -> int
+						{
+							TClass* lhs = (TClass*)lua_touserdata(L, 1);
+							TClass* rhs = (TClass*)lua_touserdata(L, 2);
+							lua_pushboolean(L, *lhs < *rhs);
+							return 1;
+						});
+					lua_setfield(L, -2, "__lt");
+				}
+
+				// Register the less-than or equal operator
+				if constexpr (has_lt_v<TClass>)
+				{
+					lua_pushcfunction(L, [](lua_State* L) -> int
+						{
+							TClass* lhs = (TClass*)lua_touserdata(L, 1);
+							TClass* rhs = (TClass*)lua_touserdata(L, 2);
+							lua_pushboolean(L, *lhs <= *rhs);
+							return 1;
+						});
+					lua_setfield(L, -2, "__le");
+				}
+
+				return *this;
 			}
 
 			// Registers a nonconst member function to lua
