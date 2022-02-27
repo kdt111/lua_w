@@ -388,14 +388,28 @@ namespace lua_w
 			value.push_to_stack(L);
 		else if constexpr (std::is_same_v<value_t, bool>)
 			lua_pushboolean(L, value);
-		else if constexpr (std::is_arithmetic_v<value_t>)
+		else if constexpr (std::is_convertible_v<value_t, lua_Number>)
 			lua_pushnumber(L, static_cast<lua_Number>(value)); // Can push anything convertible to a lua_Number (double by default)
 		else if constexpr (std::is_same_v<value_t, const char*> || std::is_same_v <value_t, char*>) // can push both const char* and char* (lua makes a copy of the sting)
 			lua_pushstring(L, value);
 		else if constexpr (std::is_same_v<value_t, std::string>) // Can also push strings as char* (lua will make a copy anyway)
 			lua_pushstring(L, value.c_str());
 		else if constexpr (std::is_pointer_v<value_t>)
-			lua_pushlightuserdata(L, value);
+		{
+			using value_t_no_ptr = std::remove_pointer_t<value_t>;
+			if constexpr (internal::has_lua_type_name_v<value_t_no_ptr>)
+			{
+				lua_pushlightuserdata(L, value);
+				// If this pointer points to a type that can be registerd, we have to check if the type was registerd
+				luaL_getmetatable(L, value_t_no_ptr::lua_type_name());
+				if (lua_istable(L, -1))
+					lua_setmetatable(L, -2);
+				else
+					lua_pop(L, 1); // if no type registration was done then pop the the one element and leave just the pointer
+			}
+			else // Just push a pointer if this type can't be registered
+				lua_pushlightuserdata(L, value);
+		}
 		else if constexpr (internal::has_lua_type_name_v<value_t>)
 		{
 			if constexpr (std::is_copy_constructible_v<value_t>)
@@ -423,7 +437,7 @@ namespace lua_w
 	// idx = -1 is the first element from the TOP of the stack
 	// WARNING!!! Be carefull when you are requesting a char* or const char*. This memory is not mamaged by C++, so they may be deleted unexpecteadly
 	// DEFINITLY DON'T MODIFY THEM
-	// The safest bet is to request a C++ string
+	// The safest bet is to request a std::string, or make a copy straight away
 	// Also be carefull when requesting any other pointers, since the memory may or may not be managed by lua
 	template<typename TValue>
 	std::optional<TValue> stack_get(lua_State* L, int idx)
@@ -448,7 +462,7 @@ namespace lua_w
 			else
 				return {};
 		}
-		else if constexpr (std::is_arithmetic_v<value_t>)
+		else if constexpr (std::is_convertible_v<value_t, lua_Number>)
 		{
 			if (lua_isnumber(L, idx))
 				return static_cast<value_t>(lua_tonumber(L, idx));
