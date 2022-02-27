@@ -25,6 +25,21 @@ namespace lua_w
 		// Helper for failing type matching in push and get templates
 		template<bool flag = false>
 		void no_match() { static_assert(flag, "No matching type found"); }
+
+		// Helper for checking if the type has a lua_type_name method
+		template<class, class = void>
+		constexpr bool has_lua_type_name_v = false;
+		
+		template<class T>
+		constexpr bool has_lua_type_name_v<T, std::void_t<decltype(T::lua_type_name())>> = std::is_same_v<decltype(T::lua_type_name()), const char*>;
+
+		// Helper for failing when no lua_type_name method is found
+		template<bool flage = false>
+		void no_lua_type() { static_assert(flage, "Class has to have a static 'const char* lua_type_name()' method"); }
+
+		// Helper for failing when the object is not copy constructible
+		template<bool flage = false>
+		void not_copy_constructible() { static_assert(flage, "To push the type to the stack it has to be copy constructible"); }
 	}
 
 	//----------------------------
@@ -361,9 +376,8 @@ namespace lua_w
 	//----------------------------
 	// STACK MANIPULATIONS
 	//----------------------------
-	// TODO: Allow pushing and getting pointers to C++ objects
 
-	// Pushes the TValue on to the stack (can push numbers, bools, strings, cstrings, lua_w::Tables)
+	// Pushes the TValue on to the stack (can push numbers, bools, strings, cstrings, lua_w::Tables, all pointers and copies of objects registerd in the lua VM)
 	template<typename TValue>
 	void stack_push(lua_State* L, const TValue& value)
 	{
@@ -372,14 +386,34 @@ namespace lua_w
 
 		if constexpr (std::is_same_v<value_t, Table>)
 			value.push_to_stack(L);
-		else if constexpr (std::is_same_v <value_t, bool>)
+		else if constexpr (std::is_same_v<value_t, bool>)
 			lua_pushboolean(L, value);
 		else if constexpr (std::is_arithmetic_v<value_t>)
 			lua_pushnumber(L, static_cast<lua_Number>(value)); // Can push anything convertible to a lua_Number (double by default)
-		else if constexpr (std::is_same_v <value_t, const char*> || std::is_same_v <value_t, char*>) // can push both const char* and char* (lua makes a copy of the sting)
+		else if constexpr (std::is_same_v<value_t, const char*> || std::is_same_v <value_t, char*>) // can push both const char* and char* (lua makes a copy of the sting)
 			lua_pushstring(L, value);
-		else if constexpr (std::is_same_v <value_t, std::string>) // Can also push strings as char* (lua will make a copy anyway)
+		else if constexpr (std::is_same_v<value_t, std::string>) // Can also push strings as char* (lua will make a copy anyway)
 			lua_pushstring(L, value.c_str());
+		else if constexpr (std::is_pointer_v<value_t>)
+			lua_pushlightuserdata(L, value);
+		else if constexpr (internal::has_lua_type_name_v<value_t>)
+		{
+			if constexpr (std::is_copy_constructible_v<value_t>)
+			{
+				luaL_getmetatable(L, TValue::lua_type_name());
+				// If the type is registerd we want to create an object, otherwise we leave the nil returned by the luaL_getmetatable on the stack
+				if (lua_istable(L, -1))
+				{
+					TValue* ptr = (TValue*)lua_newuserdata(L, sizeof(TValue));
+					new(ptr) TValue(value);
+					lua_pushvalue(L, -2);
+					lua_setmetatable(L, -2);
+					lua_remove(L, lua_gettop(L) - 1); // Remove the test metatable value (it's under the userdata)
+				}
+			}
+			else
+				internal::not_copy_constructible(); // Only objects that can be copy constructible can be passed as copies to the lua VM
+		}
 		else
 			internal::no_match(); // No matching type was found
 	}
@@ -390,6 +424,7 @@ namespace lua_w
 	// WARNING!!! Be carefull when you are requesting a char* or const char*. This memory is not mamaged by C++, so they may be deleted unexpecteadly
 	// DEFINITLY DON'T MODIFY THEM
 	// The safest bet is to request a C++ string
+	// Also be carefull when requesting any other pointers, since the memory may or may not be managed by lua
 	template<typename TValue>
 	std::optional<TValue> stack_get(lua_State* L, int idx)
 	{
@@ -431,6 +466,13 @@ namespace lua_w
 		{
 			if (lua_isstring(L, idx))
 				return std::string(lua_tostring(L, idx));
+			else
+				return {};
+		}
+		else if constexpr (std::is_pointer_v<value_t>) // WARNING!: There is no way to check the type of the object. So be shure that you are getting the pointer that you are requesting
+		{
+			if (lua_isuserdata(L, idx))
+				return (TValue)lua_touserdata(L, idx);
 			else
 				return {};
 		}
@@ -576,6 +618,7 @@ namespace lua_w
 	// Materials: http://lua-users.org/wiki/CppObjectBinding
 	// https://www.youtube.com/playlist?list=PLLwK93hM93Z3nhfJyRRWGRXHaXgNX0Itk
 	// TODO: Add operators, some reflection???, optional inheritance detection
+	// A instance of operator for checking types in lua
 
 	// Internal stuff for class binding
 	namespace internal
@@ -614,10 +657,13 @@ namespace lua_w
 		{
 		private:
 			lua_State* L;
-			const char* typeName;
 		public:
-			TypeWrapper(lua_State* L, const char* name) : typeName(name), L(L)
+			TypeWrapper(lua_State* L) : L(L)
 			{
+				// Name of the type from the required static method
+				// This is required for pushing userdata to the stack
+				constexpr const char* name = TClass::lua_type_name();
+				
 				// Check if the type exists
 				lua_getglobal(L, name);
 				if (lua_istable(L, -1))
@@ -656,20 +702,18 @@ namespace lua_w
 			// There is support for only one constructor for now
 			template<typename... TArgs>
 			void add_constructor()
-			{
+			{				
 				// Get the type table and prepare the the key 'new' to add to it (Objects are created by calling TypeName.new(args...))
-				lua_getglobal(L, typeName);
+				lua_getglobal(L, TClass::lua_type_name());
 				lua_pushliteral(L, "new");
-				lua_pushstring(L, typeName); // Push the name of the type as a upvalue to the closure (it is neaded in the constructor to assign a metatable to the created object)
-				lua_pushcclosure(L, [](lua_State* L) -> int
+				lua_pushcfunction(L, [](lua_State* L) -> int
 					{
-						const char* typeName = lua_tostring(L, lua_upvalueindex(1)); // Get the type name from the first upvalue
 						TClass* ptr = (TClass*)lua_newuserdata(L, sizeof(TClass)); // Allocate memory for the object
 						new(ptr) TClass{ internal::pop_param_form_stack<TArgs>(L)... }; // Call a inplace new constructor (Creates the object on the specified addres)
-						luaL_getmetatable(L, typeName); // Get the metatable and assign it to the created object
+						luaL_getmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
 						lua_setmetatable(L, -2);
 						return 1;
-					}, 1);
+					});
 				lua_rawset(L, -3);
 				lua_pop(L, 1); // Pop the type table
 			}
@@ -677,8 +721,8 @@ namespace lua_w
 			// Registers a nonconst member function to lua
 			template<typename TRet, typename... TArgs>
 			TypeWrapper& add_method(const char* name, internal::MemberFuncPtr_t<TClass, TRet, TArgs...> methodPtr)
-			{
-				lua_getglobal(L, typeName); // Get the type table
+			{				
+				lua_getglobal(L, TClass::lua_type_name()); // Get the type table
 				lua_pushstring(L, name); // Push the name of the method
 
 				// Create a userdata store for a member function pointer
@@ -719,7 +763,7 @@ namespace lua_w
 			template<typename TRet, typename... TArgs>
 			TypeWrapper& add_const_method(const char* name, internal::MemberConstFuncPtr_t<TClass, TRet, TArgs...> methodPtr)
 			{
-				lua_getglobal(L, typeName); // Get the type table
+				lua_getglobal(L, TClass::lua_type_name()); // Get the type table
 				lua_pushstring(L, name); // Push the name of the method
 
 				// Create a userdata store for a member function pointer
@@ -759,10 +803,48 @@ namespace lua_w
 	}
 
 	// Registers a C++ type in the lua VM
+	// Wrapped types are required to have a static method with the signature: 'const char* lua_type_name(void)'
 	template<class TClass>
-	internal::TypeWrapper<TClass> register_type(lua_State* L, const char* typeName)
+	internal::TypeWrapper<TClass> register_type(lua_State* L)
 	{
-		return internal::TypeWrapper<TClass>(L, typeName);
+		if constexpr (internal::has_lua_type_name_v<TClass>)
+			return internal::TypeWrapper<TClass>(L);
+		else
+			internal::no_lua_type();
+	}
+
+	// Registers a global function called 'instanceof' that takes two arguments (userdata and a type table)
+	// Returns true in lua when the userdata has the same type as the type table
+	void register_instance_of_function(lua_State* L)
+	{
+		lua_getglobal(L, "instanceof");
+		if (lua_iscfunction(L, -1)) // Check if the function is already registered
+		{
+			lua_pop(L, 1); // Pop the function
+			return;
+		}
+
+		lua_pushcfunction(L, [](lua_State* L) -> int
+			{
+				if (lua_isuserdata(L, 1))
+				{
+					void* ptr = lua_touserdata(L, 1);
+					lua_getmetatable(L, 1); // Now on index -1
+					if (lua_istable(L, -1))
+					{
+						lua_pushliteral(L, "__index");
+						lua_rawget(L, -2); // Get the __index field from the metatable
+						lua_pushboolean(L, lua_rawequal(L, -1, 2)); // Push the value of the equality check
+					}
+					else
+						lua_pushboolean(L, false); // Doesn't have a metatable, so can't check
+				}
+				else
+					lua_pushboolean(L, false); // Is not userdata, so can't check
+
+				return 1;
+			});
+		lua_setglobal(L, "instanceof");
 	}
 
 	//----------------------------
