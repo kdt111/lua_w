@@ -782,6 +782,8 @@ namespace lua_w
 				{
 					lua_pushcfunction(L, [](lua_State* L) -> int
 						{
+							if (!lua_isuserdata(L, 1) || !lua_isuserdata(L, 2))
+								return 0;
 							TClass* lhs = (TClass*)lua_touserdata(L, 1);
 							TClass* rhs = (TClass*)lua_touserdata(L, 2);
 							stack_push<TClass>(L, *lhs + *rhs);
@@ -795,6 +797,8 @@ namespace lua_w
 				{
 					lua_pushcfunction(L, [](lua_State* L) -> int
 						{
+							if (!lua_isuserdata(L, 1) || !lua_isuserdata(L, 2))
+								return 0;
 							TClass* lhs = (TClass*)lua_touserdata(L, 1);
 							TClass* rhs = (TClass*)lua_touserdata(L, 2);
 							stack_push<TClass>(L, *lhs - *rhs);
@@ -808,6 +812,8 @@ namespace lua_w
 				{
 					lua_pushcfunction(L, [](lua_State* L) -> int
 						{
+							if (!lua_isuserdata(L, 1) || !lua_isuserdata(L, 2))
+								return 0;
 							TClass* lhs = (TClass*)lua_touserdata(L, 1);
 							TClass* rhs = (TClass*)lua_touserdata(L, 2);
 							stack_push<TClass>(L, *lhs * *rhs);
@@ -821,6 +827,8 @@ namespace lua_w
 				{
 					lua_pushcfunction(L, [](lua_State* L) -> int
 						{
+							if (!lua_isuserdata(L, 1) || !lua_isuserdata(L, 2))
+								return 0;
 							TClass* lhs = (TClass*)lua_touserdata(L, 1);
 							TClass* rhs = (TClass*)lua_touserdata(L, 2);
 							stack_push<TClass>(L, *lhs / *rhs);
@@ -834,6 +842,8 @@ namespace lua_w
 				{
 					lua_pushcfunction(L, [](lua_State* L) -> int
 						{
+							if (!lua_isuserdata(L, 1) || !lua_isuserdata(L, 2))
+								return 0;
 							TClass* lhs = (TClass*)lua_touserdata(L, 1);
 							TClass* rhs = (TClass*)lua_touserdata(L, 2);
 							lua_pushboolean(L, *lhs == *rhs);
@@ -847,6 +857,8 @@ namespace lua_w
 				{
 					lua_pushcfunction(L, [](lua_State* L) -> int
 						{
+							if (!lua_isuserdata(L, 1) || !lua_isuserdata(L, 2))
+								return 0;
 							TClass* lhs = (TClass*)lua_touserdata(L, 1);
 							TClass* rhs = (TClass*)lua_touserdata(L, 2);
 							lua_pushboolean(L, *lhs < *rhs);
@@ -860,6 +872,8 @@ namespace lua_w
 				{
 					lua_pushcfunction(L, [](lua_State* L) -> int
 						{
+							if (!lua_isuserdata(L, 1) || !lua_isuserdata(L, 2))
+								return 0;
 							TClass* lhs = (TClass*)lua_touserdata(L, 1);
 							TClass* rhs = (TClass*)lua_touserdata(L, 2);
 							lua_pushboolean(L, *lhs <= *rhs);
