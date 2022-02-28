@@ -47,6 +47,7 @@ namespace lua_w
 	// HELPER FUNCTIONS AND OBJECTS
 	//----------------------------
 
+	// Lua's standard libraries
 	namespace Libs
 	{
 		enum Libs : uint16_t
@@ -179,7 +180,9 @@ namespace lua_w
 	// The returned value is the error code. If there were no errors it will returrn LUA_OK
 	inline int execute_string(lua_State* L, const char* string)
 	{
-		luaL_loadstring(L, string);
+		int error = luaL_loadstring(L, string);
+		if (error != LUA_OK) // Check for errors when loading the string
+			return error;
 		return lua_pcall(L, 0, LUA_MULTRET, 0);
 	}
 
@@ -982,7 +985,7 @@ namespace lua_w
 
 	// Registers a global function called 'instanceof' that takes two arguments (userdata and a type table)
 	// Returns true in lua when the userdata has the same type as the type table
-	void register_instance_of_function(lua_State* L)
+	void register_instanceof_function(lua_State* L)
 	{
 		lua_getglobal(L, "instanceof");
 		if (lua_iscfunction(L, -1)) // Check if the function is already registered
