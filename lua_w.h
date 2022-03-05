@@ -14,9 +14,6 @@
 #include <new> // Used in TypeWrapper (for inplace new)
 #include <utility> // Used in TypeWrapper (for checking if operator overloads exist)
 
-#include <fstream> // Used only in: load_script_helper
-#include <sstream> // Used only in: load_script_helper
-
 // Lua helper functions
 namespace lua_w
 {
@@ -157,61 +154,11 @@ namespace lua_w
 		return L;
 	}
 
-	// Helper function that reads the file from the path and returns it's content as a string
-	// uses std::ifstream and std::stringstream
-	std::string load_script_helper(const char* scriptPath)
-	{
-		auto file = std::ifstream(scriptPath);
-		if (!file.is_open())
-			return std::move(std::string());
-
-		std::stringstream ssbuffer;
-		ssbuffer << file.rdbuf();
-
-		// Move out the value to prevent a copy
-		return std::move(ssbuffer.str());
-	}
-
-	//----------------------------
-	// SCRIPT EXECUTION
-	//----------------------------
-	
-	// Executes the script with default error handeling
-	// The returned value is the error code. If there were no errors it will returrn LUA_OK
-	inline int execute_string(lua_State* L, const char* string)
-	{
-		int error = luaL_loadstring(L, string);
-		if (error != LUA_OK) // Check for errors when loading the string
-			return error;
-		return lua_pcall(L, 0, LUA_MULTRET, 0);
-	}
-
-	// Loads and executes the script from the provided file path with default error handeling
-	// Uses load_script_helper, to load the file
-	inline int execute_file(lua_State* L, const char* filePath)
-	{
-		return execute_string(L, load_script_helper(filePath).c_str());
-	}
-
-	// Pops the error message form the stack.
-	// Should only be used after calling 'execute_string' when its return value is not equal to LUA_OK
-	const char* pop_error_message(lua_State* L)
-	{
-		if (lua_isstring(L, -1) && !lua_isnumber(L, -1))
-		{
-			const char* str = lua_tostring(L, -1);
-			lua_pop(L, 1);
-			return str;
-		}
-		else
-			return "";
-	}
-
 	//----------------------------
 	// TABLES
 	//----------------------------
 
-	// Forward declaration of the stack manipulation functions (tables nead this, and stack functions also have to know how to handle tables)
+	// Forward declaration of the stack manipulation functions (tables nead this, to push and get different types)
 	
 	template<typename TValue>
 	void stack_push(lua_State* L, const TValue& value);
@@ -309,7 +256,7 @@ namespace lua_w
 		// NOTE: lua tables are indexed form 1, and this function follows this convention
 		// If raw is true then the calculation skips all metamethods
 		template<typename TValue>
-		std::optional<TValue> get(lua_Number idx, bool raw = false) const
+		std::optional<TValue> get(lua_Integer idx, bool raw = false) const
 		{
 			auto& L = tableData->L;
 			
@@ -327,7 +274,7 @@ namespace lua_w
 		// NOTE: lua tables are indexed form 1, and this function follows this convention
 		// If raw is true then the calculation skips all metamethods
 		template<typename TValue>
-		void set(lua_Number idx, const TValue& value, bool raw = false) const
+		void set(lua_Integer idx, const TValue& value, bool raw = false) const
 		{
 			auto& L = tableData->L;
 
@@ -489,7 +436,7 @@ namespace lua_w
 			else
 				return {};
 		}
-		else if constexpr (std::is_pointer_v<value_t>) // WARNING!: There is no way to check the type of the object. So be shure that you are getting the pointer that you are requesting
+		else if constexpr (std::is_pointer_v<value_t>) // WARNING!: There is no way to ensure that the pointer is of the appropriate type
 		{
 			if (lua_isuserdata(L, idx))
 				return (TValue)lua_touserdata(L, idx);
@@ -518,24 +465,9 @@ namespace lua_w
 			// Using a C++17 fold expression to push every type and value
 			(stack_push(L, values), ...);
 		}
-		
-		// Pops parameters form the stack to call a C function with them
-		template<typename TValue>
-		TValue pop_param_form_stack(lua_State* L)
-		{
-			// Pop values form the stack
-			// From the bottom idx 1 is the first argument, 2 is the second...
-			std::optional<TValue> value = stack_get<TValue>(L, 1);
-			// Remove this element, it shifts everything down, so now the second argument is on the idx 1, third on idx 2 ...
-			lua_remove(L, 1);
-			// We don't check if the optional holds a value. If it doesn't then the C function can't be called anyway
-			// So there will be some kind of error
-			return value.value();
-		}
 	}
 
 	// Calls a lua function with the arguments and an expected return type (either something or void)
-	// TODO: Handle multiple return values
 	template<typename TRet, typename... TArgs>
 	std::optional<TRet> call_lua_function(lua_State* L, const char* funcName, TArgs... funcArgs)
 	{
@@ -554,6 +486,8 @@ namespace lua_w
 	
 	// Registers a C function of arbitrary signature into the lua VM.
 	// The function will be called as normal if argument types and amounts match passed by lua match
+	// Otherwise calling will throw a bad optional access exeption (when popping arguments from the stack)
+	// There is no way to enforce that lua gives appropriate data to C++ functions, and they expect every argument in a specific order
 	template<typename TRet, typename... TArgs>
 	void register_function(lua_State* L, const char* funcName, internal::FuncPtr_t<TRet, TArgs...> funcPtr)
 	{
@@ -569,8 +503,9 @@ namespace lua_w
 				// Explanation - https://www.lua.org/pil/27.3.3.html
 				// The pointer was passed as light user data so we retrieve it and cast to the required type
 				internal::FuncPtr_t<TRet, TArgs...> ptr = (internal::FuncPtr_t<TRet, TArgs...>)lua_touserdata(L, lua_upvalueindex(1)); // C style cast cause of the void* type
-				// Make a tuple of the required arguments by expanding the pack to pop the values form the stack
-				std::tuple<TArgs...> args = { internal::pop_param_form_stack<TArgs>(L) ... };
+				// Counter varaible for taking note of which parameter to get
+				int argCounter = 1;
+				std::tuple<TArgs...> args = { stack_get<TArgs>(L, argCounter++).value() ... };
 				// C functions can return void or one value, so we only need to take care of two things
 				if constexpr (std::is_void_v<TRet>)
 				{
@@ -627,17 +562,10 @@ namespace lua_w
 	}
 
 	//----------------------------
-	// LUA FUNCTIONS OBJECTS
-	//----------------------------
-
-	// TODO: Implement
-
-	//----------------------------
 	// CLASS BINDING
 	//----------------------------
 	// Materials: http://lua-users.org/wiki/CppObjectBinding
 	// https://www.youtube.com/playlist?list=PLLwK93hM93Z3nhfJyRRWGRXHaXgNX0Itk
-	// TODO: Add operators
 
 	// Internal stuff for class binding
 	namespace internal
@@ -750,6 +678,9 @@ namespace lua_w
 					lua_setfield(L, -2, "__gc"); // Set the __gc metatable field to the destructor call
 				}
 
+				lua_pushstring(L, name);
+				lua_setfield(L, -2, "__name");
+
 				lua_pop(L, 3); // Pop the type table, the metatable, and the nil that was given when checking if type was registerd
 			}
 
@@ -765,7 +696,8 @@ namespace lua_w
 				lua_pushcfunction(L, [](lua_State* L) -> int
 					{
 						TClass* ptr = (TClass*)lua_newuserdata(L, sizeof(TClass)); // Allocate memory for the object
-						new(ptr) TClass{ internal::pop_param_form_stack<TArgs>(L)... }; // Call a inplace new constructor (Creates the object on the specified addres)
+						int argCount = 1;
+						new(ptr) TClass{ stack_get<TArgs>(L, argCount++).value() ... }; // Call a inplace new constructor (Creates the object on the specified addres)
 						luaL_getmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
 						lua_setmetatable(L, -2);
 						return 1;
@@ -906,20 +838,16 @@ namespace lua_w
 					{
 						// Get the pointer store form the upvalues
 						auto methodPtr = ((internal::MemberFuncPtrStore<TClass, TRet, TArgs...>*)lua_touserdata(L, lua_upvalueindex(1)))->ptr;
-						TClass* obj = (TClass*)lua_touserdata(L, 1);
-						lua_remove(L, 1); // Pop the object pointer form the stack, so we are only left with the arguments on it (we collect arguments by goint throught the stack form the begining)
-						std::tuple<TArgs...> args = { pop_param_form_stack<TArgs>(L) ... }; // pop the arguments into a tuple
+						int argCounter = 2;
+						std::tuple<TClass*, TArgs...> args = { stack_get<TClass*>(L, 1).value(), stack_get<TArgs>(L, argCounter++).value() ... }; // pop the arguments into a tuple
 						if constexpr (std::is_void_v<TRet>)
 						{
-							// Concatenate the arguments tuple with the object pointer to know on what object to call the method
-							std::apply(methodPtr, std::tuple_cat(std::make_tuple(obj), args));
+							std::apply(methodPtr, args);
 							return 0;
 						}
 						else
 						{
-							// Concatenating is the same
-							// Returning a value works the same as in calling regular function
-							TRet retVal = std::apply(methodPtr, std::tuple_cat(std::make_tuple(obj), args));
+							TRet retVal = std::apply(methodPtr, args);
 							stack_push(L, retVal);
 							return 1;
 						}
@@ -947,20 +875,18 @@ namespace lua_w
 					{
 						// Get the pointer store form the upvalues
 						auto methodPtr = ((internal::MemberConstFuncPtrStore<TClass, TRet, TArgs...>*)lua_touserdata(L, lua_upvalueindex(1)))->ptr;
-						TClass* obj = (TClass*)lua_touserdata(L, 1);
-						lua_remove(L, 1); // Pop the object pointer form the stack, so we are only left with the arguments on it (we collect arguments by goint throught the stack form the begining)
-						std::tuple<TArgs...> args = { pop_param_form_stack<TArgs>(L) ... }; // pop the arguments into a tuple
+						int argCounter = 2;
+						// We don't check if the value was retrieved form the stack succesfully
+						// C++ assumes that arguments will allways be passed to a function
+						std::tuple<const TClass*, TArgs...> args = { stack_get<const TClass*>(L, 1).value(), stack_get<TArgs>(L, argCounter++).value() ... }; // pop the arguments into a tuple
 						if constexpr (std::is_void_v<TRet>)
 						{
-							// Concatenate the arguments tuple with the object pointer to know on what object to call the method
-							std::apply(methodPtr, std::tuple_cat(std::make_tuple(obj), args));
+							std::apply(methodPtr, args);
 							return 0;
 						}
 						else
 						{
-							// Concatenating is the same
-							// Returning a value works the same as in calling regular function
-							TRet retVal = std::apply(methodPtr, std::tuple_cat(std::make_tuple(obj), args));
+							TRet retVal = std::apply(methodPtr, args);
 							stack_push(L, retVal);
 							return 1;
 						}
@@ -1016,18 +942,6 @@ namespace lua_w
 			});
 		lua_setglobal(L, "instanceof");
 	}
-
-	//----------------------------
-	// COROUTINES
-	//----------------------------
-
-	// TODO: Implement...
-
-	//----------------------------
-	// THREADS
-	//----------------------------
-
-	// TODO: Implement...
 
 }
 #endif // End of LUA_W_INCLUDE_H
