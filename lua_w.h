@@ -32,12 +32,15 @@ namespace lua_w
 		constexpr bool has_lua_type_name_v<T, std::void_t<decltype(T::lua_type_name())>> = std::is_same_v<decltype(T::lua_type_name()), const char*>;
 
 		// Helper for failing when no lua_type_name method is found
-		template<bool flage = false>
-		void no_lua_type() { static_assert(flage, "Class has to have a static 'const char* lua_type_name()' method"); }
+		template<bool flag = false>
+		void no_lua_type() { static_assert(flag, "Class has to have a static 'const char* lua_type_name()' method"); }
 
 		// Helper for failing when the object is not copy constructible
-		template<bool flage = false>
-		void not_copy_constructible() { static_assert(flage, "To push the type to the stack it has to be copy constructible"); }
+		template<bool flag = false>
+		void not_copy_constructible() { static_assert(flag, "To push the type to the stack it has to be copy constructible"); }
+
+		template<bool flag = false>
+		void not_default_constructible() {static_assert(flag, "The type has to have a default constructor to use this method");}
 	}
 
 	//----------------------------
@@ -401,10 +404,7 @@ namespace lua_w
 		if constexpr (std::is_same_v<value_t, Table>)
 		{
 			if (lua_istable(L, idx))
-			{
-				std::cout << "Table found!\n";
 				return Table::create_from_stack(L, idx);
-			}
 			else
 				return {};
 		}
@@ -685,8 +685,8 @@ namespace lua_w
 			}
 
 			// Adds a constructor with the specified types
-			// Constructors should be added last
-			// There is support for only one constructor for now
+			// Constructor has to be added last
+			// If you only want a default constructor then don't pass any types to this method
 			template<typename... TArgs>
 			void add_constructor()
 			{				
@@ -698,6 +698,37 @@ namespace lua_w
 						TClass* ptr = (TClass*)lua_newuserdata(L, sizeof(TClass)); // Allocate memory for the object
 						int argCount = 1;
 						new(ptr) TClass{ stack_get<TArgs>(L, argCount++).value() ... }; // Call a inplace new constructor (Creates the object on the specified addres)
+						luaL_getmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
+						lua_setmetatable(L, -2);
+						return 1;
+					});
+				lua_rawset(L, -3);
+				lua_pop(L, 1); // Pop the type table
+			}
+
+			// Adds a custom AND a default constructor (with no parameters)'
+			// Constructor has to be added last
+			// If you only want a default constructor use 'add_constructor()' with no passed types
+			template<typename... TArgs>
+			void add_custom_and_default_constructors()
+			{
+				// Check if the type supports default construction
+				if constexpr (!std::is_default_constructible_v<TClass>)
+					not_default_constructible();
+
+				// Get the type table and prepare the the key 'new' to add to it (Objects are created by calling TypeName.new(args...))
+				lua_getglobal(L, TClass::lua_type_name());
+				lua_pushliteral(L, "new");
+				lua_pushcfunction(L, [](lua_State* L) -> int
+					{
+						TClass* ptr = (TClass*)lua_newuserdata(L, sizeof(TClass)); // Allocate memory for the object
+						if(lua_gettop(L) == 1) // Check if arguments were passed (1 is for the object that was created)
+							new(ptr) TClass(); // Call a default constructor (if no arguments were passed)
+						else
+						{
+							int argCount = 1;
+							new(ptr) TClass{ stack_get<TArgs>(L, argCount++).value() ... }; // Call a inplace new constructor (Creates the object on the specified addres)
+						}
 						luaL_getmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
 						lua_setmetatable(L, -2);
 						return 1;
@@ -817,6 +848,17 @@ namespace lua_w
 					lua_setfield(L, -2, "__le");
 				}
 
+				lua_pop(L, 1);
+				return *this;
+			}
+
+			// Adds a custom definition for one of lua's metamethods
+			TypeWrapper& add_metamethod(const char* methodName, internal::FuncPtr_t<int, lua_State*> func)
+			{
+				luaL_getmetatable(L, TClass::lua_type_name());
+				lua_pushcfunction(L, func);
+				lua_setfield(L, -2, methodName);
+				lua_pop(L, 1);
 				return *this;
 			}
 
@@ -854,6 +896,7 @@ namespace lua_w
 					}, 1);
 				// Raw set the method to the type table
 				lua_rawset(L, -3);
+				lua_pop(L, 1); // Pop the type table
 				return *this;
 			}
 
@@ -893,6 +936,7 @@ namespace lua_w
 					}, 1);
 				// Raw set the method to the type table
 				lua_rawset(L, -3);
+				lua_pop(L, 1); // Pop the type table
 				return *this;
 			}
 		};
@@ -919,6 +963,8 @@ namespace lua_w
 			lua_pop(L, 1); // Pop the function
 			return;
 		}
+
+		lua_pop(L, 1); // Pop the nill
 
 		lua_pushcfunction(L, [](lua_State* L) -> int
 			{
