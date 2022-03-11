@@ -20,7 +20,7 @@ A `C++17`, header-only library implemented mostly as different templates that ai
 - Binding custom classes to `Lua` and that includes:
 	- Ability to call arbitrary methods (both const and nonconst)
 	- Ability to bind a constructor (one custom constructor or default constructor or both) so new instances of the class can be created in `Lua`
-	- Ability to automaticly detect and bind some custom operators to `Lua` (+, -, *, /, ==, <, <=)
+	- Ability to automaticly detect and bind some custom operators to `Lua` (+, -, *, /, unary -, ==, <, <=)
 	- Ability to define custom behaviour for `Lua`'s metamethods (eg. define more operators than the detected ones)
 	- `Lua`'s garbage collector repects calls to destructors
 	- a custom `instanceof` function that allows to check in `Lua` if a varaible is some specific bound type
@@ -101,6 +101,7 @@ public:
 	friend Vec2 operator+(const Vec2& lhs, const Vec2& rhs) { return Vec2(lhs.x + rhs.x, lhs.y + rhs.y); }
 	friend Vec2 operator-(const Vec2& lhs, const Vec2& rhs) { return Vec2(lhs.x - rhs.x, lhs.y - rhs.y); }
 	friend Vec2 operator*(const Vec2& lhs, double rhs) { return Vec2(lhs.x * rhs, lhs.y * rhs); }
+	friend Vec2 operator-(const Vec2& vec) { return Vec2(-vec.x, -vec.y); }
 	friend bool operator==(const Vec2& lhs, const Vec2& rhs) { return lhs.x == rhs.x && lhs.y == rhs.y; }
 
 	constexpr static const char* lua_type_name() { return "Vec2"; }
@@ -148,14 +149,14 @@ int main()
 			end
 		end
 
-		local v1 = Vec2.new(3, 4)
-		local v2 = Vec2.new(7, 5)
+		local v1 = Vec2(3, 4)
+		local v2 = Vec2(7, 5)
 
 		local num = 77.5
 
 		print("num = "..format_vec2(num))
 
-		print("default vector = "..format_vec2(Vec2.new()))
+		print("default vector = "..format_vec2(Vec2()))
 
 		print("v1 = "..format_vec2(v1))
 		print("v2 = "..format_vec2(v2))
@@ -166,10 +167,14 @@ int main()
 
 		print("v1 * 2 = "..format_vec2(v1 ^ 2))
 
+		print("-v1 = "..format_vec2(-v1))
+
+		print("v1 == v2 is "..tostring(v1 == v2))
+
+		print("v1 == Vec2(3, 4) is "..tostring(v1 == Vec2(3, 4)))
+
 		print("v1.magnitude() = "..#v1)
 		)script");
-
-	std::cout << lua_tostring(L, -1) << '\n';
 
 	lua_close(L);
 }

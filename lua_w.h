@@ -634,6 +634,11 @@ namespace lua_w
 		template<class T>
 		constexpr bool has_lte_v<T, std::void_t<decltype(std::declval<T>() <= std::declval<T>())>> = std::is_same_v<decltype(std::declval<T>() == std::declval<T>()), bool>;
 
+		template<class, class = void>
+		constexpr bool has_unary_minus_v = false;
+		template<class T>
+		constexpr bool has_unary_minus_v<T, std::void_t<decltype(-std::declval<T>())>> = std::is_same_v<decltype(-std::declval<T>()), T>;
+
 		// Class for wrapping a type to be used in lua
 		// You don't need to store objects of this class, just call the register_type function
 		template<class TClass>
@@ -692,17 +697,19 @@ namespace lua_w
 			{				
 				// Get the type table and prepare the the key 'new' to add to it (Objects are created by calling TypeName.new(args...))
 				lua_getglobal(L, TClass::lua_type_name());
-				lua_pushliteral(L, "new");
+				lua_createtable(L, 0, 1); // Allocate memory for one element (__call method)
+				lua_pushliteral(L, "__call");
 				lua_pushcfunction(L, [](lua_State* L) -> int
 					{
 						TClass* ptr = (TClass*)lua_newuserdata(L, sizeof(TClass)); // Allocate memory for the object
-						int argCount = 1;
+						int argCount = 2; // The first argument is the type table
 						new(ptr) TClass{ stack_get<TArgs>(L, argCount++).value() ... }; // Call a inplace new constructor (Creates the object on the specified addres)
 						luaL_getmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
 						lua_setmetatable(L, -2);
 						return 1;
 					});
 				lua_rawset(L, -3);
+				lua_setmetatable(L, -2);
 				lua_pop(L, 1); // Pop the type table
 			}
 
@@ -718,15 +725,16 @@ namespace lua_w
 
 				// Get the type table and prepare the the key 'new' to add to it (Objects are created by calling TypeName.new(args...))
 				lua_getglobal(L, TClass::lua_type_name());
-				lua_pushliteral(L, "new");
+				lua_createtable(L, 0, 1); // Allocate memory for one element (__call method)
+				lua_pushliteral(L, "__call");
 				lua_pushcfunction(L, [](lua_State* L) -> int
 					{
 						TClass* ptr = (TClass*)lua_newuserdata(L, sizeof(TClass)); // Allocate memory for the object
-						if(lua_gettop(L) == 1) // Check if arguments were passed (1 is for the object that was created)
+						if(lua_gettop(L) == 2) // Check if no arguments were passed (first is the type table, second is the created userdata)
 							new(ptr) TClass(); // Call a default constructor (if no arguments were passed)
 						else
 						{
-							int argCount = 1;
+							int argCount = 2; // The first argument is the type table
 							new(ptr) TClass{ stack_get<TArgs>(L, argCount++).value() ... }; // Call a inplace new constructor (Creates the object on the specified addres)
 						}
 						luaL_getmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
@@ -734,6 +742,7 @@ namespace lua_w
 						return 1;
 					});
 				lua_rawset(L, -3);
+				lua_setmetatable(L, -2);
 				lua_pop(L, 1); // Pop the type table
 			}
 
@@ -801,6 +810,20 @@ namespace lua_w
 							return 1;
 						});
 					lua_setfield(L, -2, "__div");
+				}
+
+				// Register the unary minus
+				if constexpr (has_unary_minus_v<TClass>)
+				{
+					lua_pushcfunction(L, [](lua_State* L) -> int
+						{
+							if (!lua_isuserdata(L, 1))
+								return 0;
+							TClass* obj = (TClass*)lua_touserdata(L, 1);
+							stack_push<TClass>(L, -*obj);
+							return 1;
+						});
+					lua_setfield(L, -2, "__unm");
 				}
 
 				// Register the equlality operator
