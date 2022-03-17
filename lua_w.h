@@ -161,172 +161,11 @@ namespace lua_w
 	// TABLES
 	//----------------------------
 
-	// Forward declaration of the stack manipulation functions (tables nead this, to push and get different types)
-	
-	template<typename TValue>
-	void stack_push(lua_State* L, const TValue& value);
-
-	template<typename TValue>
-	std::optional<TValue> stack_get(lua_State* L, int idx);
-
 	// Class that represents a lua table
 	// Doesn't store any data, only the required pointers to access the bound table in the lua VM
 	class Table
 	{
-	private:
-		// Internal struct to hold data, it allows the table to use RAII and be shared by multiple objects
-		struct TableData
-		{
-			lua_State* L;
-
-			TableData(lua_State* L) : L(L) {}
-			
-			~TableData()
-			{
-				lua_pushnil(L);
-				lua_rawsetp(L, LUA_REGISTRYINDEX, &L);
-			}
-		};		
-		// The shared_ptr stores data neaded to access the table
-		// This way the object can be coppied and there is no way that something will clear the table when
-		// Some Table has this shared_ptr
-		std::shared_ptr<TableData> tableData;
-		Table() {}
 		
-	public:
-		// Constructs a new table in the provided lua state
-		Table(lua_State* L) : tableData(std::make_shared<TableData>(L))
-		{
-			// Push a new table
-			lua_newtable(L);
-			// Assign this table to the registry, so we can use it later
-			lua_rawsetp(L, LUA_REGISTRYINDEX, &tableData->L);
-		}
-
-		// Pushes the table to the lua stack
-		// SHOULDN'T be used on it's own
-		// If the stateToPush is different than the state that this table is bound too the function pushes nil
-		void push_to_stack(lua_State* stateToPush) const
-		{
-			auto& L = tableData->L;
-			
-			if (L != stateToPush)
-			{
-				lua_pushnil(stateToPush);
-				return;
-			}
-
-			lua_rawgetp(L, LUA_REGISTRYINDEX, &L);
-		}
-
-		// Creates the table from the data on the stack
-		// SHOULDN'T be used on it's own
-		static Table create_from_stack(lua_State* L, int idx)
-		{
-			Table tab;
-			tab.tableData = std::make_shared<TableData>(L);
-
-			auto ptr = &tab.tableData->L;
-			
-			// Adjust the index if it was a pseudo index
-			// We just pushed the pointer so it is now one lower from the top
-			if (idx < 0)
-				idx--;
-			lua_pushvalue(L, idx);
-			lua_rawsetp(L, LUA_REGISTRYINDEX, ptr);
-			
-			return tab;
-		}
-
-		// Returns the amoun of integer indexed elements in the table
-		// This method doesn't account for anything in the table that has a different key
-		// If raw is true then the calculation skips all metamethods
-		lua_Integer length(bool raw = false) const
-		{
-			auto& L = tableData->L;
-			
-			lua_rawgetp(L, LUA_REGISTRYINDEX, &L);
-			if (raw)
-				lua_rawlen(L, -1);
-			else
-				lua_len(L, -1);
-			lua_Integer retVal = lua_tointeger(L, -1);
-			lua_pop(L, 2);
-			return retVal;
-		}
-
-		// Returns a value value form the table by the value index
-		// NOTE: lua tables are indexed form 1, and this function follows this convention
-		// If raw is true then the calculation skips all metamethods
-		template<typename TValue>
-		std::optional<TValue> get(lua_Integer idx, bool raw = false) const
-		{
-			auto& L = tableData->L;
-			
-			lua_rawgetp(L, LUA_REGISTRYINDEX, &L);
-			if (raw)
-				lua_rawgeti(L, -1, idx);
-			else
-				lua_geti(L, -1, idx);
-			auto retVal = stack_get<TValue>(L, -1);
-			lua_pop(L, 1);
-			return retVal;
-		}
-
-		// Pushes this value to the table
-		// NOTE: lua tables are indexed form 1, and this function follows this convention
-		// If raw is true then the calculation skips all metamethods
-		template<typename TValue>
-		void set(lua_Integer idx, const TValue& value, bool raw = false) const
-		{
-			auto& L = tableData->L;
-
-			lua_rawgetp(L, LUA_REGISTRYINDEX, &L);
-			stack_push(L, value);
-			if (raw)
-				lua_rawseti(L, -2, idx);
-			else
-				lua_seti(L, -2, idx);
-		}
-
-		// Returns a value form the table by it's string key
-		// If raw is true then the calculation skips all metamethods
-		template<typename TValue>
-		std::optional<TValue> get(const char* key, bool raw = false) const
-		{
-			auto& L = tableData->L;
-			
-			lua_rawgetp(L, LUA_REGISTRYINDEX, &L);
-			if (raw)
-			{
-				// Push as a literal (to save lua form copping something that it will pop in the next instruction)
-				lua_pushstring(L, key);
-				lua_rawget(L, -2);
-			}
-			else
-				lua_getfield(L, -1, key);
-			auto retVal = stack_get<TValue>(L, -1);
-			lua_pop(L, 1);
-			return retVal;
-		}
-
-		// Pushes the value to the table with to the provided string key
-		// If raw is true then the calculation skips all metamethods
-		template<typename TValue>
-		void set(const char* key, const TValue& value, bool raw = false) const
-		{
-			auto& L = tableData->L;
-			
-			lua_rawgetp(L, LUA_REGISTRYINDEX, &L);
-			stack_push(L, value);
-			if (raw)
-			{
-				lua_pushstring(L, key);
-				lua_rawset(L, -3);
-			}
-			else
-				lua_setfield(L, -2, key);
-		}
 	};
 
 	//----------------------------
@@ -341,7 +180,7 @@ namespace lua_w
 		using value_t = std::decay_t<TValue>;
 
 		if constexpr (std::is_same_v<value_t, Table>)
-			value.push_to_stack(L);
+			lua_pushnil(L); // TODO: Fix tables!!!
 		else if constexpr (std::is_same_v<value_t, bool>)
 			lua_pushboolean(L, value);
 		else if constexpr (std::is_convertible_v<value_t, lua_Number>)
@@ -404,7 +243,7 @@ namespace lua_w
 		if constexpr (std::is_same_v<value_t, Table>)
 		{
 			if (lua_istable(L, idx))
-				return Table::create_from_stack(L, idx);
+				return {}; //TODO: Fix Tables!!!
 			else
 				return {};
 		}
@@ -438,8 +277,10 @@ namespace lua_w
 		}
 		else if constexpr (std::is_pointer_v<value_t>) // WARNING!: There is no way to ensure that the pointer is of the appropriate type
 		{
-			if (lua_isuserdata(L, idx))
-				return (TValue)lua_touserdata(L, idx);
+			using value_t_no_ptr = std::remove_pointer_t<value_t>;
+			TValue ptr = (TValue)luaL_checkudata(L, idx, value_t_no_ptr::lua_type_name());
+			if (ptr)
+				return ptr;
 			else
 				return {};
 		}
@@ -697,19 +538,16 @@ namespace lua_w
 			{				
 				// Get the type table and prepare the the key 'new' to add to it (Objects are created by calling TypeName.new(args...))
 				lua_getglobal(L, TClass::lua_type_name());
-				lua_createtable(L, 0, 1); // Allocate memory for one element (__call method)
-				lua_pushliteral(L, "__call");
 				lua_pushcfunction(L, [](lua_State* L) -> int
 					{
 						TClass* ptr = (TClass*)lua_newuserdata(L, sizeof(TClass)); // Allocate memory for the object
-						int argCount = 2; // The first argument is the type table
+						int argCount = 1;
 						new(ptr) TClass{ stack_get<TArgs>(L, argCount++).value() ... }; // Call a inplace new constructor (Creates the object on the specified addres)
 						luaL_getmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
 						lua_setmetatable(L, -2);
 						return 1;
 					});
-				lua_rawset(L, -3);
-				lua_setmetatable(L, -2);
+				lua_setfield(L, -2, "new");
 				lua_pop(L, 1); // Pop the type table
 			}
 
@@ -725,24 +563,21 @@ namespace lua_w
 
 				// Get the type table and prepare the the key 'new' to add to it (Objects are created by calling TypeName.new(args...))
 				lua_getglobal(L, TClass::lua_type_name());
-				lua_createtable(L, 0, 1); // Allocate memory for one element (__call method)
-				lua_pushliteral(L, "__call");
 				lua_pushcfunction(L, [](lua_State* L) -> int
 					{
 						TClass* ptr = (TClass*)lua_newuserdata(L, sizeof(TClass)); // Allocate memory for the object
-						if(lua_gettop(L) == 2) // Check if no arguments were passed (first is the type table, second is the created userdata)
+						if(lua_gettop(L) == 1) // Check if no arguments were passed first is the created userdata
 							new(ptr) TClass(); // Call a default constructor (if no arguments were passed)
 						else
 						{
-							int argCount = 2; // The first argument is the type table
+							int argCount = 1;
 							new(ptr) TClass{ stack_get<TArgs>(L, argCount++).value() ... }; // Call a inplace new constructor (Creates the object on the specified addres)
 						}
 						luaL_getmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
 						lua_setmetatable(L, -2);
 						return 1;
 					});
-				lua_rawset(L, -3);
-				lua_setmetatable(L, -2);
+				lua_setfield(L, -2, "new");
 				lua_pop(L, 1); // Pop the type table
 			}
 
