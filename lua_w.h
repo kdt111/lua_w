@@ -75,7 +75,7 @@ namespace lua_w
 		lua_State* L;
 	public:
 		// Returns the internal lua_State object
-		inline lua_State* get_state() { return L; }
+		inline lua_State* get_state() const noexcept { return L; }
 		
 		ScopedState() { L = luaL_newstate(); }
 		ScopedState(lua_State*&& state) { L = state; }
@@ -83,7 +83,7 @@ namespace lua_w
 		~ScopedState() { lua_close(L); }
 
 		// Returns the internal lua_State object
-		inline lua_State* operator*() { return L; }
+		inline lua_State* operator*() const noexcept { return L; }
 		ScopedState& operator=(const ScopedState& other) = delete;
 	};
 
@@ -91,7 +91,7 @@ namespace lua_w
 	// If you want to include everything pass Libs::all
 	// If you want nothing pass Libs::none
 	// If you want for example: base and math pass (Libs::base | Libs::math)
-	lua_State* new_state_with_libs(uint16_t libs)
+	lua_State* new_state_with_libs(uint16_t libs) noexcept
 	{		
 		lua_State* L = luaL_newstate();
 		int popCount = 0;
@@ -161,11 +161,122 @@ namespace lua_w
 	// TABLES
 	//----------------------------
 
+	template<typename TValue>
+	void stack_push(lua_State* L, const TValue& value) noexcept;
+
+	template<typename TValue>
+	std::optional<TValue> stack_get(lua_State* L, int idx) noexcept;
+
 	// Class that represents a lua table
 	// Doesn't store any data, only the required pointers to access the bound table in the lua VM
 	class Table
 	{
-		
+	private:
+		class TablePointer
+		{
+		public:
+			lua_State* L;
+			inline void* get_table_id() const noexcept { return (void*)&L; }
+			TablePointer(lua_State* L) : L(L) {}
+			~TablePointer()
+			{
+				lua_pushnil(L);
+				lua_rawsetp(L, LUA_REGISTRYINDEX, get_table_id());
+			}
+		};
+
+		std::shared_ptr<TablePointer> tablePtr;
+		Table() {}
+	public:
+		// Constructs a new table on the provided lua_State
+		Table(lua_State* L) : tablePtr(std::make_shared<TablePointer>(L))
+		{
+			lua_newtable(L);
+			lua_rawsetp(L, LUA_REGISTRYINDEX, tablePtr->get_table_id());
+		}
+
+		// Pushes the table that this object holds on to the stack
+		// No nead to use this function on it's own
+		void push_to_stack(lua_State* L) const noexcept
+		{
+			if (L == tablePtr->L)
+				lua_rawgetp(L, LUA_REGISTRYINDEX, tablePtr->get_table_id());
+			else
+				lua_pushnil(L);
+		}
+
+		// Only used to retrieve tables form the stack
+		// No nead to use this function on it's own
+		static Table get_form_stack(lua_State* L, int idx)
+		{
+			Table tab;
+			tab.tablePtr = std::make_shared<TablePointer>(L);
+
+			lua_pushvalue(L, idx);
+			lua_rawsetp(L, LUA_REGISTRYINDEX, tab.tablePtr->get_table_id());
+
+			return tab;
+		}
+
+		// Returns the amount of elements in the table
+		// If 'useRaw' is true then this method will use raw acces
+ 		lua_Unsigned length() const noexcept
+		{
+			lua_State* L = tablePtr->L;
+			lua_rawgetp(L, LUA_REGISTRYINDEX, tablePtr->get_table_id());
+
+			lua_len(L, -1);
+			lua_Unsigned retVal = lua_tonumber(L, -1);
+
+			lua_pop(L, 2);
+			return retVal;
+		}
+
+		// Returns a value that was keyed by the passed in key
+		// TKey, and TValue can be anything that can be pushed and pulled from the stack
+		template<typename TKey, typename TValue>
+		std::optional<TValue> get(const TKey& key) const noexcept
+		{
+			lua_State* L = tablePtr->L;
+			lua_rawgetp(L, LUA_REGISTRYINDEX, tablePtr->get_table_id());
+
+			stack_push(L, key);
+			lua_gettable(L, -2);
+			
+			auto retVal = stack_get<TValue>(L, -1);
+
+			lua_pop(L, 2);
+			return retVal;
+		}
+
+		// Sets the passed value in the table under the passed in key
+		// TKey, and TValue can be anything that can be pushed and pulled from the stack
+		template<typename TKey, typename TValue>
+		void set(const TKey& key, const TValue& value) const noexcept
+		{
+			lua_State* L = tablePtr->L;
+			lua_rawgetp(L, LUA_REGISTRYINDEX, tablePtr->get_table_id());
+
+			stack_push(L, key);
+			stack_push(L, value);
+			lua_settable(L, -3);
+
+			lua_pop(L, 1);
+		}
+	
+		template<typename TKey, typename TValue, typename Function>
+		void for_each(const Function& function) const
+		{
+			lua_State* L = tablePtr->L;
+			lua_rawgetp(L, LUA_REGISTRYINDEX, tablePtr->get_table_id());
+			lua_pushnil(L);
+			while (lua_next(L, -2) != 0)
+			{
+				function(stack_get<TKey>(L, -2).value(), stack_get<TValue>(L, -1).value());
+				lua_pop(L, 1);
+			}
+			lua_pop(L, 1);
+		}
 	};
 
 	//----------------------------
@@ -174,13 +285,13 @@ namespace lua_w
 
 	// Pushes the TValue on to the stack (can push numbers, bools, strings, cstrings, lua_w::Tables, all pointers and copies of objects registerd in the lua VM)
 	template<typename TValue>
-	void stack_push(lua_State* L, const TValue& value)
+	void stack_push(lua_State* L, const TValue& value) noexcept
 	{
 		// Remove references, const and volatile kewyords to better match the types
 		using value_t = std::decay_t<TValue>;
 
 		if constexpr (std::is_same_v<value_t, Table>)
-			lua_pushnil(L); // TODO: Fix tables!!!
+			value.push_to_stack(L);
 		else if constexpr (std::is_same_v<value_t, bool>)
 			lua_pushboolean(L, value);
 		else if constexpr (std::is_convertible_v<value_t, lua_Number>)
@@ -191,12 +302,12 @@ namespace lua_w
 			lua_pushstring(L, value.c_str());
 		else if constexpr (std::is_pointer_v<value_t>)
 		{
-			using value_t_no_ptr = std::remove_pointer_t<value_t>;
-			if constexpr (internal::has_lua_type_name_v<value_t_no_ptr>)
+			using ValueNoPtr_t = std::remove_pointer_t<value_t>;
+			if constexpr (internal::has_lua_type_name_v<ValueNoPtr_t>)
 			{
 				lua_pushlightuserdata(L, value);
 				// If this pointer points to a type that can be registerd, we have to check if the type was registerd
-				luaL_getmetatable(L, value_t_no_ptr::lua_type_name());
+				luaL_getmetatable(L, ValueNoPtr_t::lua_type_name());
 				if (lua_istable(L, -1))
 					lua_setmetatable(L, -2);
 				else
@@ -235,7 +346,7 @@ namespace lua_w
 	// The safest bet is to request a std::string, or make a copy straight away
 	// Also be carefull when requesting any other pointers, since the memory may or may not be managed by lua
 	template<typename TValue>
-	std::optional<TValue> stack_get(lua_State* L, int idx)
+	std::optional<TValue> stack_get(lua_State* L, int idx) noexcept
 	{
 		// Remove references, const and volatile kewyords to better match the types
 		using value_t = std::decay_t<TValue>;
@@ -243,7 +354,7 @@ namespace lua_w
 		if constexpr (std::is_same_v<value_t, Table>)
 		{
 			if (lua_istable(L, idx))
-				return {}; //TODO: Fix Tables!!!
+				return Table::get_form_stack(L, idx);
 			else
 				return {};
 		}
@@ -277,8 +388,7 @@ namespace lua_w
 		}
 		else if constexpr (std::is_pointer_v<value_t>) // WARNING!: There is no way to ensure that the pointer is of the appropriate type
 		{
-			using value_t_no_ptr = std::remove_pointer_t<value_t>;
-			TValue ptr = (TValue)luaL_checkudata(L, idx, value_t_no_ptr::lua_type_name());
+			TValue ptr = (TValue)luaL_testudata(L, idx, std::remove_pointer_t<value_t>::lua_type_name());
 			if (ptr)
 				return ptr;
 			else
