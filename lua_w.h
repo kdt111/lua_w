@@ -67,26 +67,6 @@ namespace lua_w
 		};
 	}
 	
-	// A class that will open and close the state when the lifetime of the enclosing scope will be finished
-	// eg. This State will be closed when the object that holds this State will be deleted
-	class ScopedState
-	{
-	private:
-		lua_State* L;
-	public:
-		// Returns the internal lua_State object
-		inline lua_State* get_state() const noexcept { return L; }
-		
-		ScopedState() { L = luaL_newstate(); }
-		ScopedState(lua_State*&& state) { L = state; }
-		ScopedState(const ScopedState&) = delete;
-		~ScopedState() { lua_close(L); }
-
-		// Returns the internal lua_State object
-		inline lua_State* operator*() const noexcept { return L; }
-		ScopedState& operator=(const ScopedState& other) = delete;
-	};
-
 	// Creates a new lua state with libs provided as a bit mask
 	// If you want to include everything pass Libs::all
 	// If you want nothing pass Libs::none
@@ -219,7 +199,6 @@ namespace lua_w
 		}
 
 		// Returns the amount of elements in the table
-		// If 'useRaw' is true then this method will use raw acces
  		lua_Unsigned length() const noexcept
 		{
 			lua_State* L = tablePtr->L;
@@ -386,13 +365,23 @@ namespace lua_w
 			else
 				return {};
 		}
-		else if constexpr (std::is_pointer_v<value_t>) // WARNING!: There is no way to ensure that the pointer is of the appropriate type
+		else if constexpr (std::is_pointer_v<value_t>)
 		{
-			TValue ptr = (TValue)luaL_testudata(L, idx, std::remove_pointer_t<value_t>::lua_type_name());
-			if (ptr)
-				return ptr;
-			else
-				return {};
+			if constexpr (internal::has_lua_type_name_v<value_t>)
+			{
+				TValue ptr = (TValue)luaL_testudata(L, idx, std::remove_pointer_t<value_t>::lua_type_name());
+				if (ptr)
+					return ptr;
+				else
+					return {};
+			}
+			else // WARNING!: There is no way to ensure that the pointer is of the appropriate type
+			{
+				if(lua_isuserdata(L, idx))
+					return (TValue)lua_touserdata(L, idx);
+				else
+					return {};
+			}
 		}
 		else
 			internal::no_match();
@@ -428,11 +417,17 @@ namespace lua_w
 		internal::stack_push_multiple(L, funcArgs...);
 		// handle return value
 		if constexpr (std::is_void_v<TRet>)
+		{
 			lua_call(L, sizeof...(funcArgs), 0); // Take nothing if void is expected
+			return {};
+		}
 		else
+		{
 			lua_call(L, sizeof...(funcArgs), 1); // Take one argument if something is expected
-
-		return stack_get<TRet>(L, -1); // get the value form the stack and return it
+			auto retVal = stack_get<TRet>(L, -1); // get the value form the stack and return it
+			lua_pop(L, 1);
+			return retVal;
+		}
 	}
 	
 	// Registers a C function of arbitrary signature into the lua VM.
@@ -474,13 +469,6 @@ namespace lua_w
 			}, 1);
 		// Assign the pushed closure a name to make it a global function
 		lua_setglobal(L, funcName);
-	}
-
-	// Registers a function to lua with the classic signature (returning an int and taking a lua_State pointer as the only argument)
-	// You will have to handle taking the arguments, and pushing return values manually, but it gives you more controll over how everything is handled
-	void register_c_function(lua_State* L, const char* funcName, internal::FuncPtr_t<int, lua_State*> funcPtr)
-	{
-		lua_register(L, funcName, funcPtr);
 	}
 
 	//----------------------------

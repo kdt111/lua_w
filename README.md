@@ -10,7 +10,6 @@ A `C++17`, header-only library implemented mostly as different templates that ai
 - Written in `C++17` without any macros
 
 ### Library
-- Helper class for handeling the `lua_State` pointers in a more modern fashion (eg. opening the state in constructor and closing it in a destructor)
 - Opening a new `lua_State` with specified libraries
 - Stack operation made as type safe as possible (using `std::optional`)
 - Registering `C++` functions of an arbitrary signature to be used in `Lua`
@@ -122,7 +121,7 @@ int main()
 }
 ```
 
-### Binding functions
+### Binding functions and calling `Lua` functions
 ```c++
 #include <iostream>
 #include "lua_w.h"
@@ -137,8 +136,16 @@ int main()
 	lua_State* L = lua_w::new_state_with_libs(lua_w::Libs::base);
 
 	lua_w::register_function(L, "test_func", &test_func);
-	luaL_dostring(L, "test_func('3 + 7', 3, 7)");
-	
+	luaL_dostring(L, R"script(
+		function lua_func(x, y, z)
+			return x.." + "..y.." + "..z.." = "..(x + y + z)
+		end
+
+		test_func("testVariable", 3, 7)
+	)script");
+
+	std::cout << lua_w::call_lua_function<const char*, double, double, double>(L, "lua_func", 3.0, 50.0, 22.7).value_or("NO VALUE RETURNED!!!") << '\n';
+
 	lua_close(L);
 }
 ```
@@ -243,7 +250,7 @@ int main()
 }
 ```
 
-### Pointer safety
+### Pointer safety (for registered types)
 ```c++
 #include <iostream>
 #include "lua_w.h"
