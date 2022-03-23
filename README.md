@@ -177,6 +177,8 @@ public:
 	friend bool operator==(const Vec2& lhs, const Vec2& rhs) { return lhs.x == rhs.x && lhs.y == rhs.y; }
 
 	constexpr static const char* lua_type_name() { return "Vec2"; }
+
+	static Vec2 one() { return Vec2(1.0, 1.0); }
 };
 
 int main()
@@ -187,8 +189,8 @@ int main()
 
 	lua_w::register_type<Vec2>(L)
 	.add_detected_operators()
-	.add_const_method("get_x", &Vec2::get_x)
-	.add_const_method("get_y", &Vec2::get_y)
+	.add_method("get_x", &Vec2::get_x)
+	.add_method("get_y", &Vec2::get_y)
 	.add_method("set_x", &Vec2::set_x)
 	.add_method("set_y", &Vec2::set_y)
 	// Custom overload of the multiplication operator (to multiply vectors by numbers)
@@ -208,6 +210,7 @@ int main()
 		lua_pushnumber(L, vec->magnitude());
 		return 1;
 	})
+	.add_static_method("one", &Vec2::one)
 	.add_custom_and_default_constructors<double, double>();
 
 	luaL_dostring(L, R"script(
@@ -224,6 +227,7 @@ int main()
 	
 	print("num = "..format_vec2(num))
 	print("default vector = "..format_vec2(Vec2()))
+	print("Vec2.one() = "..format_vec2(Vec2.one()))
 	print("v1 = "..format_vec2(v1))
 	print("v2 = "..format_vec2(v2))
 	
