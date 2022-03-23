@@ -593,15 +593,14 @@ namespace lua_w
 				constexpr const char* name = TClass::lua_type_name();
 				
 				// Check if the type exists
-				lua_getglobal(L, name);
-				if (lua_istable(L, -1))
+				if (luaL_getmetatable(L, name) == LUA_TTABLE)
 				{
-					// If there is a global table named the same as this type, we assume that this type is already registered
+					// If there is a metatable named the same as this type, we assume that this type is already registered
 					// Pop the value to clear the stack and return form the constructor
 					lua_pop(L, 1);
 					return;
 				}
-				
+
 				lua_newtable(L); // Create a new table for the type
 				lua_pushvalue(L, -1); // Push the value again, as a reference to the main table
 				lua_setglobal(L, name); // Set the global (as the type table)
@@ -634,18 +633,19 @@ namespace lua_w
 			template<typename... TArgs>
 			void add_constructor()
 			{				
-				// Get the type table and prepare the the key 'new' to add to it (Objects are created by calling TypeName.new(args...))
 				lua_getglobal(L, TClass::lua_type_name());
+				lua_createtable(L, 0, 1); // Metatable for the '__call metamethod'
 				lua_pushcfunction(L, [](lua_State* L) -> int
 					{
 						TClass* ptr = (TClass*)lua_newuserdata(L, sizeof(TClass)); // Allocate memory for the object
-						int argCount = 1;
+						int argCount = 2; // Omit the first argument (it's the type table)
 						new(ptr) TClass{ stack_get<TArgs>(L, argCount++).value() ... }; // Call a inplace new constructor (Creates the object on the specified addres)
 						luaL_getmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
 						lua_setmetatable(L, -2);
 						return 1;
 					});
-				lua_setfield(L, -2, "new");
+				lua_setfield(L, -2, "__call");
+				lua_setmetatable(L, -2); // Set the metatable for the type table
 				lua_pop(L, 1); // Pop the type table
 			}
 
@@ -659,23 +659,24 @@ namespace lua_w
 				if constexpr (!std::is_default_constructible_v<TClass>)
 					not_default_constructible();
 
-				// Get the type table and prepare the the key 'new' to add to it (Objects are created by calling TypeName.new(args...))
 				lua_getglobal(L, TClass::lua_type_name());
+				lua_createtable(L, 0, 1); // Metatable for the '__call metamethod'
 				lua_pushcfunction(L, [](lua_State* L) -> int
 					{
 						TClass* ptr = (TClass*)lua_newuserdata(L, sizeof(TClass)); // Allocate memory for the object
-						if(lua_gettop(L) == 1) // Check if no arguments were passed first is the created userdata
+						if(lua_gettop(L) == 2) // Check if no arguments were passed first is the type table second is the created userdata
 							new(ptr) TClass(); // Call a default constructor (if no arguments were passed)
 						else
 						{
-							int argCount = 1;
+							int argCount = 2; // Omit the first argument (it's the type table)
 							new(ptr) TClass{ stack_get<TArgs>(L, argCount++).value() ... }; // Call a inplace new constructor (Creates the object on the specified addres)
 						}
 						luaL_getmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
 						lua_setmetatable(L, -2);
 						return 1;
 					});
-				lua_setfield(L, -2, "new");
+				lua_setfield(L, -2, "__call");
+				lua_setmetatable(L, -2); // Set the metatable for the type table
 				lua_pop(L, 1); // Pop the type table
 			}
 

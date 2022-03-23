@@ -152,6 +152,7 @@ int main()
 
 ### Binding classes
 ```c++
+#include <cmath>
 #include "lua_w.h"
 
 class Vec2
@@ -185,65 +186,55 @@ int main()
 	lua_w::register_instanceof_function(L);
 
 	lua_w::register_type<Vec2>(L)
-		.add_detected_operators()
-		.add_const_method("get_x", &Vec2::get_x)
-		.add_const_method("get_y", &Vec2::get_y)
-		.add_method("set_x", &Vec2::set_x)
-		.add_method("set_y", &Vec2::set_y)
-		// Custom overload of the multiplication operator (to multiply vectors by numbers)
-		.add_metamethod("__mul", [](lua_State* L) -> int
-		{
-			if (!lua_isuserdata(L, 1) || !lua_isnumber(L, 2))
-				return 0;
-			Vec2* lhs = (Vec2*)lua_touserdata(L, 1);
-			lua_Number rhs = lua_tonumber(L, 2);
-			lua_w::stack_push<Vec2>(L, *lhs * rhs);
-			return 1;
-		})
-		// Custom overload of the len operator (to get the magnitude of the vector)
-		.add_metamethod("__len", [](lua_State* L) -> int
-		{
-			Vec2* vec = (Vec2*)lua_touserdata(L, 1);
-			lua_pushnumber(L, vec->magnitude());
-			return 1;
-		})
-		.add_custom_and_default_constructors<double, double>();
-
+	.add_detected_operators()
+	.add_const_method("get_x", &Vec2::get_x)
+	.add_const_method("get_y", &Vec2::get_y)
+	.add_method("set_x", &Vec2::set_x)
+	.add_method("set_y", &Vec2::set_y)
+	// Custom overload of the multiplication operator (to multiply vectors by numbers)
+	.add_metamethod("__mul", [](lua_State* L) -> int
+	{
+		if (!lua_isuserdata(L, 1) || !lua_isnumber(L, 2))
+			return 0;
+		Vec2* lhs = (Vec2*)lua_touserdata(L, 1);
+		lua_Number rhs = lua_tonumber(L, 2);
+		lua_w::stack_push<Vec2>(L, *lhs * rhs);
+		return 1;
+	})
+	// Custom overload of the len operator (to get the magnitude of the vector)
+	.add_metamethod("__len", [](lua_State* L) -> int
+	{
+		Vec2* vec = (Vec2*)lua_touserdata(L, 1);
+		lua_pushnumber(L, vec->magnitude());
+		return 1;
+	})
+	.add_custom_and_default_constructors<double, double>();
 
 	luaL_dostring(L, R"script(
-		function format_vec2(vec)
-			if instanceof(vec, Vec2) then
-				return "("..vec:get_x()..", "..vec:get_y()..")"
-			else
-				return "NOT A VEC2"
-			end
+	function format_vec2(vec)
+		if instanceof(vec, Vec2) then
+			return "("..vec:get_x()..", "..vec:get_y()..")"
+		else
+			return "NOT A VEC2"
 		end
-
-		local v1 = Vec2.new(3, 4)
-		local v2 = Vec2.new(7, 5)
-
-		local num = 77.5
-
-		print("num = "..format_vec2(num))
-
-		print("default vector = "..format_vec2(Vec2.new()))
-
-		print("v1 = "..format_vec2(v1))
-		print("v2 = "..format_vec2(v2))
-
-		print("v1 + v2 = "..format_vec2(v1 + v2))
-
-		print("v1 - v2 = "..format_vec2(v1 - v2))
-
-		print("v1 * 2 = "..format_vec2(v1 * 2))
-
-		print("-v1 = "..format_vec2(-v1))
-
-		print("v1 == v2 is "..tostring(v1 == v2))
-
-		print("v1 == Vec2.new(3, 4) is "..tostring(v1 == Vec2.new(3, 4)))
-
-		print("v1.magnitude() = "..#v1)
+	end
+	local v1 = Vec2(3, 4)
+	local v2 = Vec2(7, 5)
+	local num = 77.5
+	
+	print("num = "..format_vec2(num))
+	print("default vector = "..format_vec2(Vec2()))
+	print("v1 = "..format_vec2(v1))
+	print("v2 = "..format_vec2(v2))
+	
+	print("v1 + v2 = "..format_vec2(v1 + v2))
+	print("v1 - v2 = "..format_vec2(v1 - v2))
+	print("v1 * 2 = "..format_vec2(v1 * 2))
+	print("-v1 = "..format_vec2(-v1))
+	
+	print("v1 == v2 is "..tostring(v1 == v2))
+	print("v1 == Vec2(3, 4) is "..tostring(v1 == Vec2(3, 4)))
+	print("v1.magnitude() = "..#v1)
 	)script");
 
 	lua_close(L);
