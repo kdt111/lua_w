@@ -70,17 +70,16 @@ namespace lua_w
 		};
 	}
 	
-	// Creates a new lua state with libs provided as a bit mask
+	// Opens the passed in libs to the passed Lua state
 	// If you want to include everything pass Libs::all
 	// If you want nothing pass Libs::none
 	// If you want for example: base and math pass (Libs::base | Libs::math)
-	lua_State* new_state_with_libs(uint16_t libs) noexcept
-	{		
-		lua_State* L = luaL_newstate();
+	void open_libs(lua_State* L, uint16_t libs) noexcept
+	{
 		int popCount = 0;
-		if (libs == Libs::all) { luaL_openlibs(L); return L; }
+		if (libs == Libs::all) 		{ luaL_openlibs(L); }
 		else if (libs == Libs::none)
-			return L;
+			return;
 
 		if (libs & Libs::base)		{ luaL_requiref(L, LUA_GNAME, luaopen_base, 1); ++popCount; }
 		if (libs & Libs::coroutine) { luaL_requiref(L, LUA_COLIBNAME, luaopen_coroutine, 1); ++popCount; }
@@ -93,7 +92,6 @@ namespace lua_w
 		if (libs & Libs::table)		{ luaL_requiref(L, LUA_TABLIBNAME, luaopen_table, 1); ++popCount; }
 		if (libs & Libs::utf8)		{ luaL_requiref(L, LUA_UTF8LIBNAME, luaopen_utf8, 1); ++popCount; }
 		lua_pop(L, popCount);
-		return L;
 	}
 
 	//----------------------------
@@ -138,10 +136,7 @@ namespace lua_w
 		// No need to use this function on it's own
 		void push_to_stack(lua_State* L) const noexcept
 		{
-			if (L == tablePtr->L)
-				lua_rawgetp(L, LUA_REGISTRYINDEX, tablePtr->get_table_id());
-			else
-				lua_pushnil(L);
+			lua_rawgetp(L, LUA_REGISTRYINDEX, tablePtr->get_table_id());
 		}
 
 		// Only used to retrieve tables form the stack
@@ -175,12 +170,22 @@ namespace lua_w
 		template<typename TKey, typename TValue>
 		std::optional<TValue> get(const TKey& key) const noexcept
 		{
+			using key_t = std::decay_t<TKey>;
 			lua_State* L = tablePtr->L;
 			lua_rawgetp(L, LUA_REGISTRYINDEX, tablePtr->get_table_id());
 
-			stack_push(L, key);
-			lua_gettable(L, -2);
-			
+			if constexpr (std::is_same_v<key_t, const char*> || std::is_same_v<key_t, char*>)
+				lua_getfield(L, -1, key);
+			else if constexpr (std::is_same_v<key_t, std::string>)
+				lua_getfield(L, -1, key.c_str());
+			else if constexpr (std::is_convertible_v<key_t, lua_Integer>)
+				lua_geti(L, -1, (lua_Integer)key);
+			else
+			{
+				stack_push(L, key);
+				lua_gettable(L, -2);
+			}
+
 			auto retVal = stack_get<TValue>(L, -1);
 
 			lua_pop(L, 2);
@@ -192,13 +197,31 @@ namespace lua_w
 		template<typename TKey, typename TValue>
 		void set(const TKey& key, const TValue& value) const noexcept
 		{
+			using key_t = std::decay_t<TKey>;
 			lua_State* L = tablePtr->L;
 			lua_rawgetp(L, LUA_REGISTRYINDEX, tablePtr->get_table_id());
 
-			stack_push(L, key);
-			stack_push(L, value);
-			lua_settable(L, -3);
-
+			if constexpr (std::is_same_v<key_t, const char*> || std::is_same_v<key_t, char*>)
+			{
+				stack_push(L, value);
+				lua_setfield(L, -2, key);
+			}
+			else if constexpr (std::is_same_v<key_t, std::string>)
+			{
+				stack_push(L, value);
+				lua_setfield(L, -2, key.c_str());
+			}
+			else if constexpr (std::is_convertible_v<key_t, lua_Integer>)
+			{
+				stack_push(L, value);
+				lua_seti(L, -2, (lua_Integer)key);
+			}
+			else
+			{
+				stack_push(L, key);
+				stack_push(L, value);
+				lua_settable(L, -3);
+			}
 			lua_pop(L, 1);
 		}
 	
@@ -224,7 +247,7 @@ namespace lua_w
 	// STACK MANIPULATIONS
 	//----------------------------
 
-	// Pushes the TValue on to the stack (can push numbers, bools, std::strings, c-style strings, lua_w::Tables, all pointers and copies of objects registerd in the lua VM)
+	// Pushes the TValue on to the stack (can push numbers, bools, c-style strings, lua_w::Tables, all pointers and copies of objects registerd in the lua VM)
 	template<typename TValue>
 	void stack_push(lua_State* L, const TValue& value) noexcept
 	{
@@ -239,21 +262,14 @@ namespace lua_w
 			lua_pushnumber(L, static_cast<lua_Number>(value)); // Can push anything convertible to a lua_Number (double by default)
 		else if constexpr (std::is_same_v<value_t, const char*> || std::is_same_v <value_t, char*>) // Lua makes a copy of the string
 			lua_pushstring(L, value);
-		else if constexpr (std::is_same_v<value_t, std::string>)
-			lua_pushstring(L, value.c_str());
 		else if constexpr (std::is_pointer_v<value_t>)
 		{
 			using ValueNoPtr_t = std::remove_pointer_t<value_t>;
+			lua_pushlightuserdata(L, value);
 			// Try to assign a metatable to the pointer if the type was registered
-			if constexpr (internal::has_lua_type_name_v<ValueNoPtr_t>)
-			{
-				lua_pushlightuserdata(L, value);
-				// If this pointer points to a type that can be registerd, we have to check if the type was registerd
-				if (luaL_getmetatable(L, ValueNoPtr_t::lua_type_name()) == LUA_TTABLE)
-					lua_setmetatable(L, -2);
-				else
-					lua_pop(L, 1); // if no type registration was done then pop the the one element and leave just the pointer
-			}
+			if constexpr (internal::has_lua_type_name_v<ValueNoPtr_t>)				
+				// Set the metatable for the pointer (will not set it if the type is not registered)
+				luaL_setmetatable(L, ValueNoPtr_t::lua_type_name());
 			else // Just push a pointer if this type can't be registered
 				lua_pushlightuserdata(L, value);
 		}
@@ -261,15 +277,10 @@ namespace lua_w
 		{
 			if constexpr (std::is_copy_constructible_v<value_t>)
 			{
-				// If the type is registerd we want to create an object, otherwise we leave the nil returned by the luaL_getmetatable on the stack
-				if (luaL_getmetatable(L, TValue::lua_type_name()) == LUA_TTABLE)
-				{
-					TValue* ptr = (TValue*)lua_newuserdata(L, sizeof(TValue));
-					new(ptr) TValue(value);
-					lua_pushvalue(L, -2);
-					lua_setmetatable(L, -2);
-					lua_remove(L, lua_gettop(L) - 1); // Remove the test metatable value (it's under the userdata)
-				}
+				// Allocate memory, call copy constructor, set metatable...
+				TValue* ptr = (TValue*)lua_newuserdata(L, sizeof(TValue));
+				new(ptr) TValue(value);
+				luaL_setmetatable(L, std::remove_pointer_t<value_t>::lua_type_name());
 			}
 			else
 				internal::not_copy_constructible(); // Only objects that can be copy constructible can be passed as copies to the lua VM
@@ -282,6 +293,7 @@ namespace lua_w
 	// idx = 1 is the first element from the BOTTOM of the stack
 	// idx = -1 is the first element from the TOP of the stack
 	// WARNING: Pointers may (especialy char*) or may not be managed by Lua so try to be carefull when using them
+	// So NEVER take ownership of anything that you got from this function
 	template<typename TValue>
 	std::optional<TValue> stack_get(lua_State* L, int idx) noexcept
 	{
@@ -315,20 +327,14 @@ namespace lua_w
 			else
 				return {};
 		}
-		else if constexpr (std::is_same_v<value_t, std::string>)
-		{
-			if (lua_isstring(L, idx))
-				return std::string(lua_tostring(L, idx));
-			else
-				return {};
-		}
 		else if constexpr (std::is_pointer_v<value_t>)
 		{
-			if constexpr (internal::has_lua_type_name_v<value_t>)
+			using value_t_no_ptr = std::remove_pointer_t<value_t>;
+			if constexpr (internal::has_lua_type_name_v<value_t_no_ptr>)
 			{
 				// If this type can be registerd this will ensure that the pointer accually points to this type
 				// It only works if the type was registered (otherwise it will allways return nullptr)
-				TValue ptr = (TValue)luaL_testudata(L, idx, std::remove_pointer_t<value_t>::lua_type_name());
+				TValue ptr = (TValue)luaL_testudata(L, idx, value_t_no_ptr::lua_type_name());
 				if (ptr)
 					return ptr;
 				else
@@ -578,8 +584,7 @@ namespace lua_w
 					TClass* ptr = (TClass*)lua_newuserdata(L, sizeof(TClass)); // Allocate memory for the object
 					int argCount = 2; // Omit the first argument (it's the type table)
 					new(ptr) TClass{ stack_get<TArgs>(L, argCount++).value() ... }; // Call a inplace new constructor (Creates the object on the specified addres)
-					luaL_getmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
-					lua_setmetatable(L, -2);
+					luaL_setmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
 					return 1;
 				});
 				lua_setfield(L, -2, "__call");
@@ -609,8 +614,7 @@ namespace lua_w
 						int argCount = 2; // Omit the first argument (it's the type table)
 						new(ptr) TClass{ stack_get<TArgs>(L, argCount++).value() ... }; // Call a inplace new constructor (Creates the object on the specified addres)
 					}
-					luaL_getmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
-					lua_setmetatable(L, -2);
+					luaL_setmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
 					return 1;
 				});
 				lua_setfield(L, -2, "__call");
@@ -857,7 +861,6 @@ namespace lua_w
 		// Check if a global function 'instanceof is registered'
 		if (lua_getglobal(L, "instanceof") == LUA_TFUNCTION) // Check if the function is already registered
 		{
-			std::cout << "Function already registered!\n";
 			lua_pop(L, 1); // Pop the function
 			return;
 		}

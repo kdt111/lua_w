@@ -16,30 +16,29 @@ A `C++17`, header-only library implemented mostly as different templates that ai
 - Calling `Lua` functions from `C++`
 - Setting and getting global values from `Lua`
 - Using `Lua`'s Tables as `C++` objects and that includes:
-	- Retrieving Tables form `Lua`'s VM
+	- Retrieving Tables form `Lua`
 	- Pushing tables from `C++` to `Lua`
 	- Keys and values can be of any supported type (type mixing in a single table is allowed)
 	- A `for_each` method that allows traversall of tables that have a constant key type and a constant value type
 - Binding custom classes to `Lua` and that includes:
-	- Ability to call arbitrary methods (both const and nonconst)
+	- Ability to call arbitrary methods (both const and non-const)
 	- Ability to bind a constructor (one custom constructor or default constructor or both) so new instances of the class can be created in `Lua`
 	- Ability to automaticly detect and bind some custom operators to `Lua` (+, -, *, /, unary -, ==, <, <=)
 	- Ability to define custom behaviour for `Lua`'s metamethods (eg. define more operators than the detected ones)
 	- `Lua`'s garbage collector repects calls to destructors
 	- a custom `instanceof` function that allows to check in `Lua` if a varaible is some specific bound type
-	- Some type safety when retrieving pointers form `Lua`
+	- Type safe retrieval of pointers to bound types from `Lua`
 
 ... And maybe something more in the future
 
 ## Usage
 - To use the libray simply include the header `lua_w.h` to your files (aside from `Lua` the only used dependencies are the standard library) 
-- A compile and a standard library that both support `C++17` are required, as some `C++17` features are used (`if constexpr`, `std::optional`, some newer stuff form `type_traits` and some others)
+- A compiler and a standard library that both support `C++17` are required, as some `C++17` features are used (`if constexpr`, `std::optional`, some newer stuff form `type_traits` and some others)
 - The header file should be placed in a directory from which 
 ```c++
 #include <lua.hpp>
 ```
 is accesible
-
 - The library doesn't use any platform specific headers, however due to time constraints I was only able to test it on Windows using MinGW (GCC 11.2.0)
 
 ## Examples
@@ -50,16 +49,19 @@ is accesible
 
 int main()
 {
-	lua_State* L = lua_w::new_state_with_libs(lua_w::Libs::base);
+	lua_State* L = luaL_newstate();
+	lua_w::open_libs(L, lua_w::Libs::base | lua_w::Libs::math);
 
 	lua_w::set_global(L, "cpp_global", "Global from C++");
 
 	luaL_dostring(L, R"(
 		lua_global = 'Global from lua'
+		lua_numeric_global = math.sin(math.pi * 2) -- Should be about 0
 		print(cpp_global)
 	)");
 
 	std::cout << lua_w::get_global<const char*>(L, "lua_global").value_or("NO GLOBAL FOUND") << '\n';
+	std::cout << lua_w::get_global<float>(L, "lua_numeric_global").value_or(-1000.0) << '\n';
 
 	lua_close(L);
 }
@@ -72,7 +74,8 @@ int main()
 
 int main()
 {
-	lua_State* L = lua_w::new_state_with_libs(lua_w::Libs::base);
+	lua_State* L = luaL_newstate();
+	lua_w::open_libs(L, lua_w::Libs::base);
 	
 	lua_w::Table cTable(L);
 	cTable.set(1, 12.7);
@@ -133,7 +136,7 @@ void test_func(const char* name, double i, double j)
 
 int main()
 {
-	lua_State* L = lua_w::new_state_with_libs(lua_w::Libs::base);
+	lua_State* L = luaL_newstate();
 
 	lua_w::register_function(L, "test_func", &test_func);
 	luaL_dostring(L, R"script(
@@ -183,7 +186,8 @@ public:
 
 int main()
 {
-	lua_State* L = lua_w::new_state_with_libs(lua_w::Libs::base);
+	lua_State* L = luaL_newstate();
+	lua_w::open_libs(L, lua_w::Libs::base);
 
 	lua_w::register_instanceof_function(L);
 
@@ -253,7 +257,7 @@ int main()
 class Type1
 {
 public:
-	static constexpr const char* lua_type_name() 
+	static constexpr const char* lua_type_name()
 	{
 		return "Type1";
 	}
@@ -268,21 +272,20 @@ public:
 	}
 };
 
-
 int main()
 {
-	lua_State* L = lua_w::new_state_with_libs(lua_w::Libs::base);
+	lua_State* L = luaL_newstate();
 
 	lua_w::register_type<Type1>(L).add_constructor();
 	lua_w::register_type<Type2>(L).add_constructor();
 
 	luaL_dostring(L, R"script(
-		t1 = Type1.new()
-		t2 = Type2.new()
+		t1 = Type1()
+		t2 = Type2()
 	)script");
 
 	std::cout << "t1 as 'Type1': ";
-	if(lua_w::get_global<Type1*>(L, "t1"))
+	if (lua_w::get_global<Type1*>(L, "t1"))
 		std::cout << "VALID\n";
 	else
 		std::cout << "INVALID\n";
@@ -292,7 +295,7 @@ int main()
 		std::cout << "VALID\n";
 	else
 		std::cout << "INVALID\n";
-	
+
 	std::cout << "t2 as 'Type2': ";
 	if (lua_w::get_global<Type2*>(L, "t2"))
 		std::cout << "VALID\n";
