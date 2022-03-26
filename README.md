@@ -29,7 +29,7 @@ A `C++17`, header-only library implemented mostly as different templates that ai
 	- Ability to define custom behaviour for `Lua`'s metamethods (eg. define more operators than the detected ones)
 	- `Lua`'s garbage collector repects calls to destructors
 	- a custom `instanceof` function that allows to check in `Lua` if a varaible is some specific bound type
-	- Type safe retrieval of pointers from `Lua`
+	- Type safe retrieval of pointers from `Lua` using RTTI (you can opt-out of this feature)
 
 ... And all of this (and maybe something more in the future) in just about 1000 lines of code
 
@@ -41,12 +41,12 @@ A `C++17`, header-only library implemented mostly as different templates that ai
 #include <lua.hpp>
 ```
 is accesible
-- If you want to use the optional feature of safe pointer retrieval then before the include directive define `LUA_W_USE_PTR_SAFETY` like so:
+- If you don't want to use safe pointer retrieval then define `LUA_W_NO_PTR_SAFETY` before including `lua_w.h` like so:
 ``` c++
-#define LUA_W_USE_PTR_SAFETY
+#define LUA_W_NO_PTR_SAFETY
 #include "lua_w.h"
 ```
-this will enforce pointer safety on all bound types (eg. you can't opt in or out on class by class basis. It's either globally on or globally off). Not bound types are ALLWAYS unsafe to use regardless of this option
+Opting out of this feature will make all pointer retrievals form `Lua` unsafe (the pointer may not point to the requested data type). When this safety is NOT disabled the every type that inherits form `lua_w::LuaBaseObject` can be safely retrieved with a guarranty that it points to the specified type (or can the data can be converted to the specified type)
 - The library doesn't use any platform specific headers, however due to time constraints I was only able to test it on Windows using MinGW (GCC 11.2.0)
 
 ## Limitations
@@ -62,11 +62,13 @@ int* function_lua_wrapper(const char* str)
 - Since `Lua` has no default way of handeling function overaloading, so no automatic overloading of functions, operators and constructors is possible. You can probably implement this manually by checking what kind of arguments your function recieves, but it is beyond the scope of my skills to do so automaticly
 - If you want to use `add_parent_type<TParentClass>()` register `TParentClass` first (If you won't then calling methods form the base type will not work). For simplicity only one base type is allowed (so no multiple inheritance)
 - If you override a method form a base type you have to register that override using `add_method()`. If you won't do that then the implementation form the base type will be called instead. (This happens becouse `Lua` is not aware of the override's existance)
+- Pointer safety uses RTTI (for `dynamic_cast`) this only happens when retrieving pointers form `Lua` AND `LUA_W_USE_PTR_SAFETY` is defined. Otherwise no additional checks are done. `Lua` provides no additional information to ensure that a cast is valid and we have to get this information form somewhere at runtime. If you don't want pointer safety just don't define 
 
 ## Examples
 ### Globals
 ```c++
 #include <iostream>
+#define LUA_W_NO_PTR_SAFETY
 #include "lua_w.h"
 
 int main()
@@ -92,6 +94,7 @@ int main()
 ### Tables
 ```c++
 #include <iostream>
+#define LUA_W_NO_PTR_SAFETY
 #include "lua_w.h"
 
 int main()
@@ -172,6 +175,7 @@ int main()
 ### Using `Lua's` functions
 ```c++
 #include <iostream>
+#define LUA_W_NO_PTR_SAFETY
 #include "lua_w.h"
 
 int main()
@@ -212,8 +216,8 @@ int main()
 ### Binding classes
 ```c++
 #include <iostream>
-
 #include <cmath>
+#define LUA_W_NO_PTR_SAFETY
 #include "lua_w.h"
 
 class Object
@@ -321,19 +325,13 @@ int main()
 }
 ```
 
-### Pointer safety (optional)
+### Pointer safety
 ```c++
 #include <iostream>
 
-#define LUA_W_USE_PTR_SAFETY
 #include "lua_w.h"
 
-struct Base : public lua_w::LuaBaseObject
-{
-	static constexpr const char* lua_type_name() { return "Base"; }
-};
-
-struct Type1 : Base
+struct Type1 : lua_w::LuaBaseObject
 {
 	static constexpr const char* lua_type_name() { return "Type1"; }
 };
@@ -343,18 +341,35 @@ struct Type2 : public Type1
 	static constexpr const char* lua_type_name() { return "Type2"; }
 };
 
+struct NotRegisteredType : public lua_w::LuaBaseObject {};
+
 int main()
 {
 	lua_State* L = luaL_newstate();
 
-	lua_w::register_type<Base>(L);
-	lua_w::register_type<Type1>(L).add_parent_type<Base>().add_constructor();
+	lua_w::register_type<Type1>(L).add_constructor();
 	lua_w::register_type<Type2>(L).add_parent_type<Type1>().add_constructor();
+
+	NotRegisteredType ntr;
+
+	lua_w::set_global(L, "ntr", &ntr);
 
 	luaL_dostring(L, R"script(
 		t1 = Type1()
 		t2 = Type2()
 	)script");
+
+	std::cout << "ntr as 'NotRegisteredType': ";
+	if (lua_w::get_global<NotRegisteredType*>(L, "ntr"))
+		std::cout << "VALID\n";
+	else
+		std::cout << "INVALID\n";
+
+	std::cout << "ntr as 'Type1': ";
+	if (lua_w::get_global<Type1*>(L, "ntr"))
+		std::cout << "VALID\n";
+	else
+		std::cout << "INVALID\n";
 
 	std::cout << "t1 as 'Type1': ";
 	if (lua_w::get_global<Type1*>(L, "t1"))

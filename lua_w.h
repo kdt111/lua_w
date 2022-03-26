@@ -4,8 +4,8 @@
 #ifndef LUA_W_INCLUDE_H
 #define LUA_W_INCLUDE_H
 
-// Use this directive to enable pointer safety (this uses RTTI)
-// #define LUA_W_USE_PTR_SAFETY
+// Use this directive to DISABLE pointer safety (pointer safety uses RTTI)
+// #define LUA_W_NO_PTR_SAFETY
 
 #include <lua.hpp>
 
@@ -71,7 +71,7 @@ namespace lua_w
 		lua_pop(L, popCount);
 	}
 
-	#ifdef LUA_W_USE_PTR_SAFETY
+	#ifndef LUA_W_NO_PTR_SAFETY
 	// Base class for all of the registered Lua types
 	class LuaBaseObject { public: virtual ~LuaBaseObject() {} };
 	#endif
@@ -338,8 +338,7 @@ namespace lua_w
 	// Returns a value form the lua stack on the position idx if it exists or can be converted to the TValue type, otherwise returns an empty optional
 	// idx = 1 is the first element from the BOTTOM of the stack
 	// idx = -1 is the first element from the TOP of the stack
-	// WARNING: Pointers may (especialy char*) or may not be managed by Lua so try to be carefull when using them
-	// So NEVER take ownership of anything that you got from this function
+	// WARNING: Pointers (including const char*) may or may not be managed by Lua so try to be carefull when using them (especialy storing them somewhere for later use, as they can get GC'ied by Lua)
 	template<typename TValue>
 	std::optional<TValue> stack_get(lua_State* L, int idx) noexcept
 	{
@@ -356,7 +355,7 @@ namespace lua_w
 			return lua_isstring(L, idx) ? std::optional(lua_tostring(L, idx)) : std::nullopt;
 		else if constexpr (std::is_pointer_v<value_t>)
 		{
-			#ifdef LUA_W_USE_PTR_SAFETY
+			#ifndef LUA_W_NO_PTR_SAFETY
 			using value_t_no_ptr = std::remove_pointer_t<value_t>;
 			if constexpr (std::is_convertible_v<TValue, LuaBaseObject*>)
 			{
@@ -407,8 +406,7 @@ namespace lua_w
 			}
 			else
 			{
-				TRet retVal = std::apply(ptr, std::move(args));
-				stack_push<TRet>(L, retVal);
+				stack_push<TRet>(L, std::apply(ptr, std::move(args)));
 				return 1; // We leave one value on the stack
 			}
 		}
@@ -470,8 +468,6 @@ namespace lua_w
 	//----------------------------
 	// CLASS BINDING
 	//----------------------------
-	// Materials: http://lua-users.org/wiki/CppObjectBinding
-	// https://www.youtube.com/playlist?list=PLLwK93hM93Z3nhfJyRRWGRXHaXgNX0Itk
 
 	// Internal stuff for class binding
 	namespace internal
@@ -529,12 +525,12 @@ namespace lua_w
 		template<class, class = void>
 		constexpr bool has_lt_v = false;
 		template<class T>
-		constexpr bool has_lt_v<T, std::void_t<decltype(std::declval<T>() < std::declval<T>())>> = std::is_same_v<decltype(std::declval<T>() == std::declval<T>()), bool>;
+		constexpr bool has_lt_v<T, std::void_t<decltype(std::declval<T>() < std::declval<T>())>> = std::is_same_v<decltype(std::declval<T>() < std::declval<T>()), bool>;
 
 		template<class, class = void>
 		constexpr bool has_lte_v = false;
 		template<class T>
-		constexpr bool has_lte_v<T, std::void_t<decltype(std::declval<T>() <= std::declval<T>())>> = std::is_same_v<decltype(std::declval<T>() == std::declval<T>()), bool>;
+		constexpr bool has_lte_v<T, std::void_t<decltype(std::declval<T>() <= std::declval<T>())>> = std::is_same_v<decltype(std::declval<T>() <= std::declval<T>()), bool>;
 
 		template<class, class = void>
 		constexpr bool has_unary_minus_v = false;
@@ -557,8 +553,7 @@ namespace lua_w
 			}
 			else
 			{
-				TRet retVal = std::apply(methodPtr, std::move(args));
-				stack_push(L, retVal);
+				stack_push(L, std::apply(methodPtr, std::move(args)));
 				return 1;
 			}
 		}
@@ -866,8 +861,8 @@ namespace lua_w
 			{
 				static_assert(std::is_base_of_v<TParentClass, TClass>, "'TParentClass' is not a base type for 'TClass'");
 				static_assert(has_lua_type_name_v<TParentClass>, "'TParentClass' has to have a 'static const char* lua_type_name() method'");
-				#ifdef LUA_W_USE_PTR_SAFETY
-				static_assert(std::is_base_of_v<LuaBaseObject, TParentClass>, "'TParentClass' has to derive from 'LuaBaseObject' when 'LUA_W_USE_PTR_SAFETY' is defined");
+				#ifndef LUA_W_NO_PTR_SAFETY
+				static_assert(std::is_base_of_v<LuaBaseObject, TParentClass>, "'TParentClass' has to derive from 'LuaBaseObject' when 'LUA_W_NO_PTR_SAFETY' is NOT defined");
 				#endif
 
 				luaL_getmetatable(L, TClass::lua_type_name());
@@ -888,12 +883,11 @@ namespace lua_w
 	internal::TypeWrapper<TClass> register_type(lua_State* L) noexcept
 	{
 		static_assert(internal::has_lua_type_name_v<TClass>, "Class has to have a static 'static const char* lua_type_name()' method");
-		#ifdef LUA_W_USE_PTR_SAFETY
-		static_assert(std::is_base_of_v<LuaBaseObject, TClass>, "'TClass' has to derive from 'LuaBaseObject' when 'LUA_W_USE_PTR_SAFETY' is defined");
+		#ifndef LUA_W_NO_PTR_SAFETY
+		static_assert(std::is_base_of_v<LuaBaseObject, TClass>, "'TClass' has to derive from 'LuaBaseObject' when 'LUA_W_NO_PTR_SAFETY' is NOT defined");
 		#endif
 		return internal::TypeWrapper<TClass>(L);
 	}
-
 
 	// Registers a global function called 'instanceof' that takes two arguments (userdata and a type table)
 	// Returns true in lua when the userdata has the same type as the type table
