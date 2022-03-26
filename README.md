@@ -198,7 +198,7 @@ int main()
 	)script");
 
 	std::cout << lua_w::call_lua_function<const char*>(L, "lua_func", 3.0, 50.0, 22.7).value_or("NO VALUE RETURNED!!!") << '\n';
-	lua_w::call_lua_function_no_return(L, "echo", "Argument passed form C++");
+	lua_w::call_lua_function_void(L, "echo", "Argument passed form C++");
 
 	auto returnedFunction = lua_w::call_lua_function<lua_w::Function>(L, "returns_a_function").value();
 	std::cout << "Should be 10 = " << returnedFunction.call<int>(3).value() << '\n'; // (x = 7) x + 3 = 10

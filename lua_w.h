@@ -9,11 +9,10 @@
 
 #include <lua.hpp>
 
-#include <optional> // Used in: stack_get, call_lua_function, get_global (and anything that calls them)
-#include <tuple> // Used in: call_c_func_impl (and anything that calls them)
-#include <type_traits> // Used in: stack_push, stack_get, call_c_func_impl, call_lua_function (and anything that calls them)
-#include <string> // Used in: stack_push, stack_get (and anything that calls them)
-#include <memory> // Used in: Table class as tableKey
+#include <optional> // Used in: stack_get, (and anything that uses this)
+#include <tuple> // Used in: registered_function, call_lua_func_impl(_void), Function class, TypeWrapper class (and anything that calls them)
+#include <type_traits> // Used in: stack_push, stack_get, registered_function, call_lua_function(_void)... (and anything that calls them)
+#include <memory> // Used in: Table class and Function class
 #include <new> // Used in TypeWrapper (for inplace new)
 #include <utility> // Used in TypeWrapper (for checking if operator overloads exist)
 
@@ -33,23 +32,6 @@ namespace lua_w
 		
 		template<class T>
 		constexpr bool has_lua_type_name_v<T, std::void_t<decltype(T::lua_type_name())>> = std::is_same_v<decltype(T::lua_type_name()), const char*>;
-
-		// Helper for failing when no lua_type_name method is found
-		template<bool flag = false>
-		void no_lua_type() { static_assert(flag, "Class has to have a static 'static const char* lua_type_name()' method"); }
-
-		// Helper for failing when the object is not copy constructible
-		template<bool flag = false>
-		void not_copy_constructible() { static_assert(flag, "To push the type to the stack it has to be copy constructible"); }
-
-		// Helper for failing when the object is not default constructible
-		template<bool flag = false>
-		void not_default_constructible() { static_assert(flag, "The type has to have a default constructor to use this method"); }
-
-		#ifdef LUA_W_USE_PTR_SAFETY
-		template<bool flag = false>
-		void does_not_inherit_from_LuaBaseObject() { static_assert(flag, "When 'LUA_W_USE_PTR_SAFETY' is defined registered types have to inherit form 'LuaBaseObject'"); }
-		#endif
 	}
 
 	//----------------------------
@@ -129,7 +111,7 @@ namespace lua_w
 
 		// Calls a lua function that is already on the stack. This function returns nothing
 		template<typename... TArgs>
-		void call_lua_func_impl_no_return(lua_State* L, TArgs... args)
+		void call_lua_func_impl_void(lua_State* L, TArgs... args)
 		{
 			(stack_push(L, args), ...); // Push all of the arguments
 			lua_call(L, sizeof...(args), 0);
@@ -141,9 +123,6 @@ namespace lua_w
 
 		template<class T, typename TKey, typename TValue>
 		constexpr bool for_each_matches_v<T, TKey, TValue, std::void_t<decltype(std::declval<T>()(std::declval<TKey>(), std::declval<TValue>()))>> = true;
-
-		template <bool flag = false>
-		void for_each_doesnt_match() { static_assert(flag, "The 'for_each' callable can't be called with the 'TKey', and 'TValue' types"); }
 	}
 
 	//----------------------------
@@ -155,7 +134,7 @@ namespace lua_w
 	class Table
 	{
 		std::shared_ptr<internal::LuaObjectReference> tablePtr;
-		Table(const std::shared_ptr<internal::LuaObjectReference> ref) : tablePtr(ref) {}
+		Table(const std::shared_ptr<internal::LuaObjectReference>& ref) : tablePtr(ref) {}
 	public:
 		// Constructs a new table on the provided lua_State
 		Table(lua_State* L) : tablePtr(std::make_shared<internal::LuaObjectReference>(L))
@@ -259,9 +238,7 @@ namespace lua_w
 		template<typename TKey, typename TValue, typename Function>
 		void for_each(const Function& function) const
 		{
-			if constexpr (!internal::for_each_matches_v<Function, TKey, TValue>)
-				internal::for_each_doesnt_match();
-
+			static_assert(internal::for_each_matches_v<Function, TKey, TValue>, "The 'for_each' callable can't be called with the 'TKey', and 'TValue' types");
 			lua_State* L = tablePtr->L;
 			lua_rawgetp(L, LUA_REGISTRYINDEX, tablePtr->get_object_id());
 			lua_pushnil(L);
@@ -282,7 +259,7 @@ namespace lua_w
 	class Function
 	{
 		std::shared_ptr<internal::LuaObjectReference> funcPtr;
-		Function(const std::shared_ptr<internal::LuaObjectReference> ref) : funcPtr(ref) {}
+		Function(const std::shared_ptr<internal::LuaObjectReference>& ref) : funcPtr(ref) {}
 	public:
 		// Calls a function and expects something in return
 		template<typename TRet, typename... TArgs>
@@ -295,11 +272,11 @@ namespace lua_w
 
 		// Calls a function and expects nothing is return
 		template<typename... TArgs>
-		void call_no_return(TArgs... args) const noexcept
+		void call_void(TArgs... args) const noexcept
 		{
 			lua_State* L = funcPtr->L;
 			lua_rawgetp(L, LUA_REGISTRYINDEX, funcPtr->get_object_id());
-			internal::call_lua_func_impl_no_return<TArgs...>(L, std::move(args) ...);
+			internal::call_lua_func_impl_void<TArgs...>(L, std::move(args) ...);
 		}
 
 		// Pushes the function that this object holds on to the stack
@@ -348,15 +325,11 @@ namespace lua_w
 		}
 		else if constexpr (internal::has_lua_type_name_v<value_t>)
 		{
-			if constexpr (std::is_copy_constructible_v<value_t>)
-			{
-				// Allocate memory, call copy constructor, set metatable...
-				TValue* ptr = (TValue*)lua_newuserdata(L, sizeof(TValue));
-				new(ptr) TValue(value);
-				luaL_setmetatable(L, std::remove_pointer_t<value_t>::lua_type_name());
-			}
-			else
-				internal::not_copy_constructible(); // Only objects that can be copy constructible can be passed as copies to the lua VM
+			static_assert(std::is_copy_constructible_v<value_t>, "To push a full object to the stack this object has to be copy constructible");
+			// Allocate memory, call copy constructor, set metatable...
+			TValue* ptr = (TValue*)lua_newuserdata(L, sizeof(TValue));
+			new(ptr) TValue(value);
+			luaL_setmetatable(L, std::remove_pointer_t<value_t>::lua_type_name());
 		}
 		else
 			internal::no_match(); // No matching type was found
@@ -385,7 +358,7 @@ namespace lua_w
 		{
 			#ifdef LUA_W_USE_PTR_SAFETY
 			using value_t_no_ptr = std::remove_pointer_t<value_t>;
-			if constexpr (internal::has_lua_type_name_v<value_t_no_ptr> && std::is_convertible_v<TValue, LuaBaseObject*>)
+			if constexpr (std::is_convertible_v<TValue, LuaBaseObject*>)
 			{
 				if(lua_isuserdata(L, idx))
 				{
@@ -434,7 +407,6 @@ namespace lua_w
 			}
 			else
 			{
-				// TODO: handle functions returning pointers to common types
 				TRet retVal = std::apply(ptr, std::move(args));
 				stack_push<TRet>(L, retVal);
 				return 1; // We leave one value on the stack
@@ -446,16 +418,17 @@ namespace lua_w
 	template<typename TRet, typename... TArgs>
 	std::optional<TRet> call_lua_function(lua_State* L, const char* funcName, TArgs... funcArgs) noexcept
 	{
+		// nodiscard helps with overload resolution. If the return value is discarded the compiler will choose the overload that returns void
 		lua_getglobal(L, funcName); // Get function by name
 		return internal::call_lua_func_impl<TRet, TArgs...>(L, std::move(funcArgs) ...);
 	}
 	
 	// Calls a Lua function with the arguments. This function returns nothing
 	template<typename... TArgs>
-	void call_lua_function_no_return(lua_State* L, const char* funcName, TArgs... funcArgs) noexcept
+	void call_lua_function_void(lua_State* L, const char* funcName, TArgs... funcArgs) noexcept
 	{
 		lua_getglobal(L, funcName); // Get function by name
-		internal::call_lua_func_impl_no_return<TArgs...>(L, std::move(funcArgs) ...);
+		internal::call_lua_func_impl_void<TArgs...>(L, std::move(funcArgs) ...);
 	}
 
 	// Registers a C function of arbitrary signature into the lua VM.
@@ -568,8 +541,27 @@ namespace lua_w
 		template<class T>
 		constexpr bool has_unary_minus_v<T, std::void_t<decltype(-std::declval<T>())>> = std::is_same_v<decltype(-std::declval<T>()), T>;
 
-		template<bool flag = false>
-		void not_a_base_class() { static_assert(flag, "The 'TParentClass' has to be a direct base class of 'TClass'"); }
+		// Implementation of a method call from Lua
+		template<typename StoreType, class TClass, typename TRet, typename... TArgs>
+		int call_method_impl(lua_State* L)
+		{
+			// Get the method pointer form the storage struct
+			auto methodPtr = ((StoreType*)lua_touserdata(L, lua_upvalueindex(1)))->ptr;
+			int argCounter = 2;
+			// First argument is the pointer to the object to call the method on
+			std::tuple<TClass*, TArgs...> args = { (TClass*)lua_touserdata(L, 1), stack_get<TArgs>(L, argCounter++).value() ... };
+			if constexpr (std::is_void_v<TRet>)
+			{
+				std::apply(methodPtr, std::move(args));
+				return 0;
+			}
+			else
+			{
+				TRet retVal = std::apply(methodPtr, std::move(args));
+				stack_push(L, retVal);
+				return 1;
+			}
+		}
 
 		// Class for wrapping a type to be used in lua
 		// You don't need to store objects of this class, just call the register_type function
@@ -664,10 +656,7 @@ namespace lua_w
 			template<typename... TArgs>
 			void add_custom_and_default_constructors() const noexcept
 			{
-				// Check if the type supports default construction
-				if constexpr (!std::is_default_constructible_v<TClass>)
-					not_default_constructible();
-
+				static_assert(std::is_default_constructible_v<TClass>, "'TClass' is not default constructible");
 				add_constructor_impl([](lua_State* L) -> int
 				{
 					TClass* ptr = (TClass*)lua_newuserdata(L, sizeof(TClass)); // Allocate memory for the object
@@ -813,7 +802,7 @@ namespace lua_w
 			}
 
 			// Adds a custom definition for one of lua's metamethods
-			const TypeWrapper& add_metamethod(const char* methodName, internal::FuncPtr_t<int, lua_State*> func) const noexcept
+			const TypeWrapper& add_metamethod(const char* methodName, lua_CFunction func) const noexcept
 			{
 				luaL_getmetatable(L, TClass::lua_type_name());
 				lua_pushcfunction(L, func);
@@ -825,34 +814,17 @@ namespace lua_w
 			// Registers a nonconst member function to lua
 			template<typename TRet, typename... TArgs>
 			const TypeWrapper& add_method(const char* name, internal::MemberFuncPtr_t<TClass, TRet, TArgs...> methodPtr) const noexcept
-			{				
+			{	
+				using PtrStore_t = internal::MemberFuncPtrStore<TClass, TRet, TArgs...>;
 				luaL_getmetatable(L, TClass::lua_type_name());
 				lua_getfield(L, -1, "__index"); // __index field is the type table
 				// Create a userdata store for a member function pointer
 				// They are bigger than regular pointers (so we store them in a struct)
 				// In GCC 11.2.0 a void* takes 8 bytes, and a member pointer takes 16 bytes, so we can't store this in a lightuserdata
-				auto store = (internal::MemberFuncPtrStore<TClass, TRet, TArgs...>*)lua_newuserdata(L, sizeof(internal::MemberFuncPtrStore<TClass, TRet, TArgs...>));
+				auto store = (PtrStore_t*)lua_newuserdata(L, sizeof(PtrStore_t));
 				store->ptr = methodPtr;
-
 				// We will call the method as a closure (so we can take the member method pointer)
-				lua_pushcclosure(L, [](lua_State* L) -> int
-				{
-					// Get the pointer store form the upvalues
-					auto methodPtr = ((internal::MemberFuncPtrStore<TClass, TRet, TArgs...>*)lua_touserdata(L, lua_upvalueindex(1)))->ptr;
-					int argCounter = 2;
-					std::tuple<TClass*, TArgs...> args = { (TClass*)lua_touserdata(L, 1), stack_get<TArgs>(L, argCounter++).value() ... }; // pop the arguments into a tuple
-					if constexpr (std::is_void_v<TRet>)
-					{
-						std::apply(methodPtr, args);
-						return 0;
-					}
-					else
-					{
-						TRet retVal = std::apply(methodPtr, args);
-						stack_push(L, retVal);
-						return 1;
-					}
-				}, 1);
+				lua_pushcclosure(L, &call_method_impl<PtrStore_t, TClass, TRet, TArgs...>, 1);
 				// Raw set the method to the type table
 				lua_setfield(L, -2, name);
 				lua_pop(L, 2); // Pop the type table
@@ -864,28 +836,12 @@ namespace lua_w
 			const TypeWrapper& add_method(const char* name, internal::MemberConstFuncPtr_t<TClass, TRet, TArgs...> methodPtr) const noexcept
 			{
 				// Everything works the same as the non-const version
+				using PtrStore_t = internal::MemberConstFuncPtrStore<TClass, TRet, TArgs...>;
 				luaL_getmetatable(L, TClass::lua_type_name());
 				lua_getfield(L, -1, "__index");
-				auto store = (internal::MemberConstFuncPtrStore<TClass, TRet, TArgs...>*)lua_newuserdata(L, sizeof(internal::MemberConstFuncPtrStore<TClass, TRet, TArgs...>));
+				auto store = (PtrStore_t*)lua_newuserdata(L, sizeof(PtrStore_t));
 				store->ptr = methodPtr;
-
-				lua_pushcclosure(L, [](lua_State* L) -> int
-				{
-					auto methodPtr = ((internal::MemberConstFuncPtrStore<TClass, TRet, TArgs...>*)lua_touserdata(L, lua_upvalueindex(1)))->ptr;
-					int argCounter = 2;
-					std::tuple<const TClass*, TArgs...> args = { (const TClass*)lua_touserdata(L, 1), stack_get<TArgs>(L, argCounter++).value() ... }; // pop the arguments into a tuple
-					if constexpr (std::is_void_v<TRet>)
-					{
-						std::apply(methodPtr, args);
-						return 0;
-					}
-					else
-					{
-						TRet retVal = std::apply(methodPtr, args);
-						stack_push(L, retVal);
-						return 1;
-					}
-				}, 1);
+				lua_pushcclosure(L, &call_method_impl<PtrStore_t, TClass, TRet, TArgs...>, 1);
 				lua_setfield(L, -2, name);
 				lua_pop(L, 2);
 				return *this;
@@ -908,15 +864,10 @@ namespace lua_w
 			template<class TParentClass>
 			const TypeWrapper& add_parent_type() const noexcept
 			{
-				if constexpr (!std::is_base_of_v<TParentClass, TClass>)
-					not_a_base_class();
-
-				if constexpr (!has_lua_type_name_v<TParentClass>)
-					no_lua_type();
-				
+				static_assert(std::is_base_of_v<TParentClass, TClass>, "'TParentClass' is not a base type for 'TClass'");
+				static_assert(has_lua_type_name_v<TParentClass>, "'TParentClass' has to have a 'static const char* lua_type_name() method'");
 				#ifdef LUA_W_USE_PTR_SAFETY
-				if constexpr (!std::is_base_of_v<LuaBaseObject, TParentClass>)
-					does_not_inherit_from_LuaBaseObject();
+				static_assert(std::is_base_of_v<LuaBaseObject, TParentClass>, "'TParentClass' has to derive from 'LuaBaseObject' when 'LUA_W_USE_PTR_SAFETY' is defined");
 				#endif
 
 				luaL_getmetatable(L, TClass::lua_type_name());
@@ -936,19 +887,11 @@ namespace lua_w
 	template<class TClass>
 	internal::TypeWrapper<TClass> register_type(lua_State* L) noexcept
 	{
-		if constexpr (internal::has_lua_type_name_v<TClass>)
-		{
-			#ifdef LUA_W_USE_PTR_SAFETY
-			if constexpr(std::is_base_of_v<LuaBaseObject, TClass>)
-				return internal::TypeWrapper<TClass>(L);
-			else
-				internal::does_not_inherit_from_LuaBaseObject();
-			#else
-			return internal::TypeWrapper<TClass>(L);
-			#endif
-		}
-		else
-			internal::no_lua_type();	
+		static_assert(internal::has_lua_type_name_v<TClass>, "Class has to have a static 'static const char* lua_type_name()' method");
+		#ifdef LUA_W_USE_PTR_SAFETY
+		static_assert(std::is_base_of_v<LuaBaseObject, TClass>, "'TClass' has to derive from 'LuaBaseObject' when 'LUA_W_USE_PTR_SAFETY' is defined");
+		#endif
+		return internal::TypeWrapper<TClass>(L);
 	}
 
 
