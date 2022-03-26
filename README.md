@@ -29,7 +29,7 @@ A `C++17`, header-only library implemented mostly as different templates that ai
 	- Ability to define custom behaviour for `Lua`'s metamethods (eg. define more operators than the detected ones)
 	- `Lua`'s garbage collector repects calls to destructors
 	- a custom `instanceof` function that allows to check in `Lua` if a varaible is some specific bound type
-	- Type safe retrieval of pointers to bound types from `Lua`
+	- Type safe retrieval of pointers from `Lua`
 
 ... And all of this (and maybe something more in the future) in just about 1000 lines of code
 
@@ -41,6 +41,12 @@ A `C++17`, header-only library implemented mostly as different templates that ai
 #include <lua.hpp>
 ```
 is accesible
+- If you want to use the optional feature of safe pointer retrieval then before the include directive define `LUA_W_USE_PTR_SAFETY` like so:
+``` c++
+#define LUA_W_USE_PTR_SAFETY
+#include "lua_w.h"
+```
+this will enforce pointer safety on all bound types (eg. you can't opt in or out on class by class basis. It's either globally on or globally off). Not bound types are ALLWAYS unsafe to use regardless of this option
 - The library doesn't use any platform specific headers, however due to time constraints I was only able to test it on Windows using MinGW (GCC 11.2.0)
 
 ## Limitations
@@ -54,6 +60,8 @@ int* function_lua_wrapper(const char* str)
 }
 ```
 - Since `Lua` has no default way of handeling function overaloading, so no automatic overloading of functions, operators and constructors is possible. You can probably implement this manually by checking what kind of arguments your function recieves, but it is beyond the scope of my skills to do so automaticly
+- If you want to use `add_parent_type<TParentClass>()` register `TParentClass` first (If you won't then calling methods form the base type will not work). For simplicity only one base type is allowed (so no multiple inheritance)
+- If you override a method form a base type you have to register that override using `add_method()`. If you won't do that then the implementation form the base type will be called instead. (This happens becouse `Lua` is not aware of the override's existance)
 
 ## Examples
 ### Globals
@@ -171,7 +179,7 @@ int main()
 	lua_State* L = luaL_newstate();
 	lua_w::open_libs(L, lua_w::Libs::base);
 
-	if(luaL_dostring(L, R"script(
+	luaL_dostring(L, R"script(
 		function lua_func(x, y, z)
 			return x.." + "..y.." + "..z.." = "..(x + y + z)
 		end
@@ -187,8 +195,7 @@ int main()
 						return x
 					end)
 		end
-	)script") != LUA_OK)
-		std::cout << "ERROR: " << lua_tostring(L, -1) << '\n';
+	)script");
 
 	std::cout << lua_w::call_lua_function<const char*>(L, "lua_func", 3.0, 50.0, 22.7).value_or("NO VALUE RETURNED!!!") << '\n';
 	lua_w::call_lua_function_no_return(L, "echo", "Argument passed form C++");
@@ -204,10 +211,19 @@ int main()
 
 ### Binding classes
 ```c++
+#include <iostream>
+
 #include <cmath>
 #include "lua_w.h"
 
-class Vec2
+class Object
+{
+public:
+	constexpr static const char* lua_type_name() { return "Object"; }
+	void print() const { std::cout << this << '\n'; }
+};
+
+class Vec2 : public Object
 {
 private:
 	double x, y;
@@ -240,7 +256,11 @@ int main()
 
 	lua_w::register_instanceof_function(L);
 
+	lua_w::register_type<Object>(L)
+	.add_method("print", &Object::print);
+
 	lua_w::register_type<Vec2>(L)
+	.add_parent_type<Object>()
 	.add_detected_operators()
 	.add_method("get_x", &Vec2::get_x)
 	.add_method("get_y", &Vec2::get_y)
@@ -277,12 +297,15 @@ int main()
 	local v1 = Vec2(3, 4)
 	local v2 = Vec2(7, 5)
 	local num = 77.5
-	
+
 	print("num = "..format_vec2(num))
 	print("default vector = "..format_vec2(Vec2()))
 	print("Vec2.one() = "..format_vec2(Vec2.one()))
 	print("v1 = "..format_vec2(v1))
 	print("v2 = "..format_vec2(v2))
+
+	print("Using the inherited method")
+	v1:print()
 	
 	print("v1 + v2 = "..format_vec2(v1 + v2))
 	print("v1 - v2 = "..format_vec2(v1 - v2))
@@ -298,17 +321,24 @@ int main()
 }
 ```
 
-### Pointer safety (for registered types)
+### Pointer safety (optional)
 ```c++
 #include <iostream>
+
+#define LUA_W_USE_PTR_SAFETY
 #include "lua_w.h"
 
-struct Type1
+struct Base : public lua_w::LuaBaseObject
+{
+	static constexpr const char* lua_type_name() { return "Base"; }
+};
+
+struct Type1 : Base
 {
 	static constexpr const char* lua_type_name() { return "Type1"; }
 };
 
-struct Type2
+struct Type2 : public Type1
 {
 	static constexpr const char* lua_type_name() { return "Type2"; }
 };
@@ -317,8 +347,9 @@ int main()
 {
 	lua_State* L = luaL_newstate();
 
-	lua_w::register_type<Type1>(L).add_constructor();
-	lua_w::register_type<Type2>(L).add_constructor();
+	lua_w::register_type<Base>(L);
+	lua_w::register_type<Type1>(L).add_parent_type<Base>().add_constructor();
+	lua_w::register_type<Type2>(L).add_parent_type<Type1>().add_constructor();
 
 	luaL_dostring(L, R"script(
 		t1 = Type1()
