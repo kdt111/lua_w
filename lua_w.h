@@ -42,16 +42,6 @@ namespace lua_w
 		// Helper for failing when the object is not default constructible
 		template<bool flag = false>
 		void not_default_constructible() { static_assert(flag, "The type has to have a default constructor to use this method"); }
-
-		// Helper for checking if the signature of the 'for_each' table function matches the required types
-		template<class, typename, typename, class = void>
-		constexpr bool for_each_matches_v = false;
-
-		template<class T, typename TKey, typename TValue>
-		constexpr bool for_each_matches_v<T, TKey, TValue, std::void_t<decltype(std::declval<T>()(std::declval<TKey>(), std::declval<TValue>()))>> = true;
-	
-		template <bool flag = false>
-		void for_each_doesnt_match() { static_assert(flag, "The 'for_each' callable can't be called with the 'TKey', and 'TValue' types"); }
 	}
 
 	//----------------------------
@@ -63,23 +53,20 @@ namespace lua_w
 	{
 		enum Libs : uint16_t
 		{
-			none = 0, 		base = 1 << 1, 		coroutine = 1 << 2,
-			debug = 1 << 3, io = 1 << 4, 		math = 1 << 5,
-			os = 1 << 6,	package = 1 << 7, 	string = 1 << 8,
-			table = 1 << 9, utf8 = 1 << 10, 	all = ((1 << 16) - 1)
+			base = 1, 			coroutine = 1 << 1, debug = 1 << 2, 
+			io = 1 << 3, 		math = 1 << 4, 		os = 1 << 5,	
+			package = 1 << 6,	string = 1 << 7, 	table = 1 << 8, 
+			utf8 = 1 << 9, 		all = ((1 << 16) - 1)
 		};
 	}
 	
 	// Opens the passed in libs to the passed Lua state
 	// If you want to include everything pass Libs::all
-	// If you want nothing pass Libs::none
 	// If you want for example: base and math pass (Libs::base | Libs::math)
 	void open_libs(lua_State* L, uint16_t libs) noexcept
 	{
 		int popCount = 0;
 		if (libs == Libs::all) 		{ luaL_openlibs(L); }
-		else if (libs == Libs::none)
-			return;
 
 		if (libs & Libs::base)		{ luaL_requiref(L, LUA_GNAME, luaopen_base, 1); ++popCount; }
 		if (libs & Libs::coroutine) { luaL_requiref(L, LUA_COLIBNAME, luaopen_coroutine, 1); ++popCount; }
@@ -94,60 +81,91 @@ namespace lua_w
 		lua_pop(L, popCount);
 	}
 
-	//----------------------------
-	// TABLES
-	//----------------------------
-
 	template<typename TValue>
 	void stack_push(lua_State* L, const TValue& value) noexcept;
 
 	template<typename TValue>
 	std::optional<TValue> stack_get(lua_State* L, int idx) noexcept;
 
+	// Internal data for functions and tables
+	namespace internal
+	{
+		// Object that holds a holds a reference to a Lua object so it is accessible in C++ and will not be garbage collected by Lua
+		struct LuaObjectReference
+		{
+			lua_State* L;
+			inline void* get_object_id() const noexcept { return (void*)&L; }
+			LuaObjectReference(lua_State* L) : L(L) {}
+			~LuaObjectReference()
+			{
+				lua_pushnil(L);
+				lua_rawsetp(L, LUA_REGISTRYINDEX, get_object_id());
+			}
+		};
+
+		// Calls a lua function that is already on the stack. This function can have one return value
+		template<typename TRet, typename... TArgs>
+		std::optional<TRet> call_lua_func_impl(lua_State* L, TArgs... args)
+		{
+			(stack_push(L, args), ...); // Push all of the arguments
+			lua_call(L, sizeof...(args), 1);
+			auto retVal = stack_get<TRet>(L, -1); // get the value form the stack and return it
+			lua_pop(L, 1);
+			return retVal;
+		}
+
+		// Calls a lua function that is already on the stack. This function returns nothing
+		template<typename... TArgs>
+		void call_lua_func_impl_no_return(lua_State* L, TArgs... args)
+		{
+			(stack_push(L, args), ...); // Push all of the arguments
+			lua_call(L, sizeof...(args), 0);
+		}
+
+		// Helper for checking if the signature of the 'for_each' table function matches the required types
+		template<class, typename, typename, class = void>
+		constexpr bool for_each_matches_v = false;
+
+		template<class T, typename TKey, typename TValue>
+		constexpr bool for_each_matches_v<T, TKey, TValue, std::void_t<decltype(std::declval<T>()(std::declval<TKey>(), std::declval<TValue>()))>> = true;
+
+		template <bool flag = false>
+		void for_each_doesnt_match() { static_assert(flag, "The 'for_each' callable can't be called with the 'TKey', and 'TValue' types"); }
+	}
+
+	//----------------------------
+	// TABLES
+	//----------------------------
+
 	// Class that represents a lua table
 	// Doesn't store any data, only the required pointers to access the bound table in the lua VM
 	class Table
 	{
-	private:
-		class TablePointer
-		{
-		public:
-			lua_State* L;
-			inline void* get_table_id() const noexcept { return (void*)&L; }
-			TablePointer(lua_State* L) : L(L) {}
-			~TablePointer()
-			{
-				lua_pushnil(L);
-				lua_rawsetp(L, LUA_REGISTRYINDEX, get_table_id());
-			}
-		};
-
-		std::shared_ptr<TablePointer> tablePtr;
-		Table() {}
+		std::shared_ptr<internal::LuaObjectReference> tablePtr;
+		Table(const std::shared_ptr<internal::LuaObjectReference> ref) : tablePtr(ref) {}
 	public:
 		// Constructs a new table on the provided lua_State
-		Table(lua_State* L) : tablePtr(std::make_shared<TablePointer>(L))
+		Table(lua_State* L) : tablePtr(std::make_shared<internal::LuaObjectReference>(L))
 		{
 			lua_newtable(L);
-			lua_rawsetp(L, LUA_REGISTRYINDEX, tablePtr->get_table_id());
+			lua_rawsetp(L, LUA_REGISTRYINDEX, tablePtr->get_object_id());
 		}
 
 		// Pushes the table that this object holds on to the stack
 		// No need to use this function on it's own
 		void push_to_stack(lua_State* L) const noexcept
 		{
-			lua_rawgetp(L, LUA_REGISTRYINDEX, tablePtr->get_table_id());
+			lua_rawgetp(L, LUA_REGISTRYINDEX, tablePtr->get_object_id());
 		}
 
 		// Only used to retrieve tables form the stack
 		// No need to use this function on it's own
 		static Table get_form_stack(lua_State* L, int idx) noexcept
 		{
-			Table tab;
-			tab.tablePtr = std::make_shared<TablePointer>(L);
+			Table tab(std::make_shared<internal::LuaObjectReference>(L));
 
 			lua_pushvalue(L, idx);
-			lua_rawsetp(L, LUA_REGISTRYINDEX, tab.tablePtr->get_table_id());
+			lua_rawsetp(L, LUA_REGISTRYINDEX, tab.tablePtr->get_object_id());
 
 			return tab;
 		}
@@ -156,7 +174,7 @@ namespace lua_w
  		lua_Unsigned length() const noexcept
 		{
 			lua_State* L = tablePtr->L;
-			lua_rawgetp(L, LUA_REGISTRYINDEX, tablePtr->get_table_id());
+			lua_rawgetp(L, LUA_REGISTRYINDEX, tablePtr->get_object_id());
 
 			lua_len(L, -1);
 			lua_Unsigned retVal = lua_tonumber(L, -1);
@@ -172,7 +190,7 @@ namespace lua_w
 		{
 			using key_t = std::decay_t<TKey>;
 			lua_State* L = tablePtr->L;
-			lua_rawgetp(L, LUA_REGISTRYINDEX, tablePtr->get_table_id());
+			lua_rawgetp(L, LUA_REGISTRYINDEX, tablePtr->get_object_id());
 
 			if constexpr (std::is_same_v<key_t, const char*> || std::is_same_v<key_t, char*>)
 				lua_getfield(L, -1, key);
@@ -199,7 +217,7 @@ namespace lua_w
 		{
 			using key_t = std::decay_t<TKey>;
 			lua_State* L = tablePtr->L;
-			lua_rawgetp(L, LUA_REGISTRYINDEX, tablePtr->get_table_id());
+			lua_rawgetp(L, LUA_REGISTRYINDEX, tablePtr->get_object_id());
 
 			if constexpr (std::is_same_v<key_t, const char*> || std::is_same_v<key_t, char*>)
 			{
@@ -232,7 +250,7 @@ namespace lua_w
 				internal::for_each_doesnt_match();
 
 			lua_State* L = tablePtr->L;
-			lua_rawgetp(L, LUA_REGISTRYINDEX, tablePtr->get_table_id());
+			lua_rawgetp(L, LUA_REGISTRYINDEX, tablePtr->get_object_id());
 			lua_pushnil(L);
 			while (lua_next(L, -2) != 0)
 			{
@@ -240,6 +258,54 @@ namespace lua_w
 				lua_pop(L, 1);
 			}
 			lua_pop(L, 1);
+		}
+	};
+
+	//----------------------------
+	// Functions
+	//----------------------------
+
+	// Class that represents a lua function
+	class Function
+	{
+		std::shared_ptr<internal::LuaObjectReference> funcPtr;
+		Function(const std::shared_ptr<internal::LuaObjectReference> ref) : funcPtr(ref) {}
+	public:
+		// Calls a function and expects something in return
+		template<typename TRet, typename... TArgs>
+		std::optional<TRet> call(TArgs... args) const noexcept
+		{
+			lua_State* L = funcPtr->L;
+			lua_rawgetp(L, LUA_REGISTRYINDEX, funcPtr->get_object_id());
+			return internal::call_lua_func_impl<TRet, TArgs...>(L, std::move(args) ...);
+		}
+
+		// Calls a function and expects nothing is return
+		template<typename... TArgs>
+		void call_no_return(TArgs... args) const noexcept
+		{
+			lua_State* L = funcPtr->L;
+			lua_rawgetp(L, LUA_REGISTRYINDEX, funcPtr->get_object_id());
+			internal::call_lua_func_impl_no_return<TArgs...>(L, std::move(args) ...);
+		}
+
+		// Pushes the function that this object holds on to the stack
+		// No need to use this function on it's own
+		void push_to_stack(lua_State* L) const noexcept
+		{
+			lua_rawgetp(L, LUA_REGISTRYINDEX, funcPtr->get_object_id());
+		}
+
+		// Only used to retrieve functions form the stack
+		// No need to use this function on it's own
+		static Function get_form_stack(lua_State* L, int idx) noexcept
+		{
+			Function func(std::make_shared<internal::LuaObjectReference>(L));
+
+			lua_pushvalue(L, idx);
+			lua_rawsetp(L, LUA_REGISTRYINDEX, func.funcPtr->get_object_id());
+
+			return func;
 		}
 	};
 
@@ -254,7 +320,7 @@ namespace lua_w
 		// Remove references, const and volatile kewyords to better match the types
 		using value_t = std::decay_t<TValue>;
 
-		if constexpr (std::is_same_v<value_t, Table>)
+		if constexpr (std::is_same_v<value_t, Table> || std::is_same_v<value_t, Function>) // Table and Function have the same interface
 			value.push_to_stack(L);
 		else if constexpr (std::is_same_v<value_t, bool>)
 			lua_pushboolean(L, value);
@@ -270,8 +336,6 @@ namespace lua_w
 			if constexpr (internal::has_lua_type_name_v<ValueNoPtr_t>)				
 				// Set the metatable for the pointer (will not set it if the type is not registered)
 				luaL_setmetatable(L, ValueNoPtr_t::lua_type_name());
-			else // Just push a pointer if this type can't be registered
-				lua_pushlightuserdata(L, value);
 		}
 		else if constexpr (internal::has_lua_type_name_v<value_t>)
 		{
@@ -299,7 +363,14 @@ namespace lua_w
 	{
 		using value_t = std::decay_t<TValue>; // Remove references, const and volatile kewyords to better match the types
 
-		if constexpr (std::is_same_v<value_t, Table>)
+		if constexpr (std::is_same_v<value_t, Function>)
+		{
+			if (lua_isfunction(L, idx))
+				return Function::get_form_stack(L, idx);
+			else
+				return {};
+		}
+		else if constexpr (std::is_same_v<value_t, Table>)
 		{
 			if (lua_istable(L, idx))
 				return Table::get_form_stack(L, idx);
@@ -391,27 +462,22 @@ namespace lua_w
 		}
 	}
 
-	// Calls a lua function with the arguments and an expected return type (either something or void)
+	// Calls a Lua function with the arguments and an expected return type
 	template<typename TRet, typename... TArgs>
 	std::optional<TRet> call_lua_function(lua_State* L, const char* funcName, TArgs... funcArgs) noexcept
 	{
 		lua_getglobal(L, funcName); // Get function by name
-		(stack_push(L, funcArgs), ...); // Push all of the arguments
-		// handle return value
-		if constexpr (std::is_void_v<TRet>)
-		{
-			lua_call(L, sizeof...(funcArgs), 0); // Take nothing if void is expected
-			return {};
-		}
-		else
-		{
-			lua_call(L, sizeof...(funcArgs), 1); // Take one argument if something is expected
-			auto retVal = stack_get<TRet>(L, -1); // get the value form the stack and return it
-			lua_pop(L, 1);
-			return retVal;
-		}
+		return internal::call_lua_func_impl<TRet, TArgs...>(L, std::move(funcArgs) ...);
 	}
 	
+	// Calls a Lua function with the arguments. This function returns nothing
+	template<typename... TArgs>
+	void call_lua_function_no_return(lua_State* L, const char* funcName, TArgs... funcArgs) noexcept
+	{
+		lua_getglobal(L, funcName); // Get function by name
+		internal::call_lua_func_impl_no_return<TArgs...>(L, std::move(funcArgs) ...);
+	}
+
 	// Registers a C function of arbitrary signature into the lua VM.
 	// The function will be called as normal if all arguments are present and have required types
 	template<typename TRet, typename... TArgs>

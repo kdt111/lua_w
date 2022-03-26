@@ -4,24 +4,26 @@ A `C++17`, header-only library implemented mostly as different templates that ai
 ## Features
 ### General
 - **Header-only** - no complicated build systems required
-- **Stateless** - no objects (aside from the lua' state) hold any information required for the bindings to function
+- **Stateless** - no objects (aside from the `Lua's` state) hold any information required for the bindings to function
+- **As simple as possible** - I tried to not reinvent the wheel, so everything that can be done simply with the default API should be done using it
 - **Modular** - aside from basic stack manipulation every feature of the library can function on it's own
 - **Commented code** - so you don't have to wonder how everything works
 - Written in `C++17` without any macros
 
 ### Library
-- Opening a new `lua_State` with specified libraries
+- Simple opening of specified `Lua` libraries
 - Stack operation made as type safe as possible (using `std::optional`)
-- Registering `C++` functions of an arbitrary signature to be used in `Lua`
+- Registering `C++` functions of an arbitrary signature to be used in `Lua` (Some limitations are mentioned in the "Limitations" section) 
 - Calling `Lua` functions from `C++`
+- Storing `Lua` functions as `C++` objects and calling them form this object
 - Setting and getting global values from `Lua`
-- Using `Lua`'s Tables as `C++` objects and that includes:
+- Using `Lua's` Tables as `C++` objects and that includes:
 	- Retrieving Tables form `Lua`
 	- Pushing tables from `C++` to `Lua`
 	- Keys and values can be of any supported type (type mixing in a single table is allowed)
 	- A `for_each` method that allows traversall of tables that have a constant key type and a constant value type
 - Binding custom classes to `Lua` and that includes:
-	- Ability to call arbitrary methods (both const and non-const)
+	- Ability to call arbitrary methods (both const and non-const; Some limitations are mentioned in the "Limitations" section)
 	- Ability to bind a constructor (one custom constructor or default constructor or both) so new instances of the class can be created in `Lua`
 	- Ability to automaticly detect and bind some custom operators to `Lua` (+, -, *, /, unary -, ==, <, <=)
 	- Ability to define custom behaviour for `Lua`'s metamethods (eg. define more operators than the detected ones)
@@ -29,7 +31,7 @@ A `C++17`, header-only library implemented mostly as different templates that ai
 	- a custom `instanceof` function that allows to check in `Lua` if a varaible is some specific bound type
 	- Type safe retrieval of pointers to bound types from `Lua`
 
-... And maybe something more in the future
+... And all of this (and maybe something more in the future) in just about 1000 lines of code
 
 ## Usage
 - To use the libray simply include the header `lua_w.h` to your files (aside from `Lua` the only used dependencies are the standard library) 
@@ -40,6 +42,18 @@ A `C++17`, header-only library implemented mostly as different templates that ai
 ```
 is accesible
 - The library doesn't use any platform specific headers, however due to time constraints I was only able to test it on Windows using MinGW (GCC 11.2.0)
+
+## Limitations
+- Functions and methods that are registered can't have arguments and return values that are references (eg. `void print(const std::string& str)`). This is due to the fact that `std::optional` can't store references (and also `Lua` is a `C` library, so references don't mean anything to it). The simplest solution is to write a simple wrapper that uses pointers. Example:
+```c++
+int& function(const std::string& str);
+
+int* function_lua_wrapper(const char* str)
+{
+	return &function(std::string(str));
+}
+```
+- Since `Lua` has no default way of handeling function overaloading, so no automatic overloading of functions, operators and constructors is possible. You can probably implement this manually by checking what kind of arguments your function recieves, but it is beyond the scope of my skills to do so automaticly
 
 ## Examples
 ### Globals
@@ -124,7 +138,7 @@ int main()
 }
 ```
 
-### Binding functions and calling `Lua` functions
+### Binding functions
 ```c++
 #include <iostream>
 #include "lua_w.h"
@@ -140,14 +154,49 @@ int main()
 
 	lua_w::register_function(L, "test_func", &test_func);
 	luaL_dostring(L, R"script(
+		test_func("testVariable", 3, 7)
+	)script");
+
+	lua_close(L);
+}
+```
+
+### Using `Lua's` functions
+```c++
+#include <iostream>
+#include "lua_w.h"
+
+int main()
+{
+	lua_State* L = luaL_newstate();
+	lua_w::open_libs(L, lua_w::Libs::base);
+
+	if(luaL_dostring(L, R"script(
 		function lua_func(x, y, z)
 			return x.." + "..y.." + "..z.." = "..(x + y + z)
 		end
 
-		test_func("testVariable", 3, 7)
-	)script");
+		function echo(text)
+			print('echo! "'..text..'"')
+		end
 
-	std::cout << lua_w::call_lua_function<const char*, double, double, double>(L, "lua_func", 3.0, 50.0, 22.7).value_or("NO VALUE RETURNED!!!") << '\n';
+		function returns_a_function()
+			local x = 7
+			return (function(value) 
+						x = x + value
+						return x
+					end)
+		end
+	)script") != LUA_OK)
+		std::cout << "ERROR: " << lua_tostring(L, -1) << '\n';
+
+	std::cout << lua_w::call_lua_function<const char*>(L, "lua_func", 3.0, 50.0, 22.7).value_or("NO VALUE RETURNED!!!") << '\n';
+	lua_w::call_lua_function_no_return(L, "echo", "Argument passed form C++");
+
+	auto returnedFunction = lua_w::call_lua_function<lua_w::Function>(L, "returns_a_function").value();
+	std::cout << "Should be 10 = " << returnedFunction.call<int>(3).value() << '\n'; // (x = 7) x + 3 = 10
+	std::cout << "Should be 15 = " << returnedFunction.call<int>(5).value() << '\n'; // (x = 10) x + 5 = 15
+	std::cout << "Should be 8 = " << returnedFunction.call<int>(-7).value() << '\n'; // (x = 15) x + (-7) = 8
 
 	lua_close(L);
 }
@@ -254,22 +303,14 @@ int main()
 #include <iostream>
 #include "lua_w.h"
 
-class Type1
+struct Type1
 {
-public:
-	static constexpr const char* lua_type_name()
-	{
-		return "Type1";
-	}
+	static constexpr const char* lua_type_name() { return "Type1"; }
 };
 
-class Type2
+struct Type2
 {
-public:
-	static constexpr const char* lua_type_name()
-	{
-		return "Type2";
-	}
+	static constexpr const char* lua_type_name() { return "Type2"; }
 };
 
 int main()
