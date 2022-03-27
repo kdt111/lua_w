@@ -96,7 +96,7 @@ namespace lua_w
 		// Returns true if the Result holds a value
 		inline bool has_value() const noexcept { return isValid; }
 		// Returns the Result's value. If it doesn't hold a value then a exception is thrown
-		inline T value() const { return isValid ? *((T*)storage) : throw "Tried to get a value out of an empty Result"; }
+		inline T value() const { return isValid ? *((T*)storage) : throw std::exception(); }
 		// Returns the Result's value. If it doesn't hold a value then 'other' is returned
 		inline T value_or(const T& other) const noexcept { return isValid ? *((T*)storage) : other; }
 		// The same as 'has_value()'
@@ -117,7 +117,7 @@ namespace lua_w
 		// Returns true if the Result holds a value
 		bool has_value() const noexcept { return pointer; }
 		// Returns the Result's value. If it doesn't hold a value then a exception is thrown
-		T& value() const { return pointer ? *pointer : throw "Tried to get a value out of an empty Result"; }
+		T& value() const { return pointer ? *pointer : throw std::exception(); }
 		// Returns the Result's value. If it doesn't hold a value then 'other' is returned
 		T& value_or(const T& other) const noexcept { return pointer ? *pointer : other; }
 		// The same as 'has_value()'
@@ -310,12 +310,19 @@ namespace lua_w
 			lua_State* L = tablePtr->L;
 			lua_rawgetp(L, LUA_REGISTRYINDEX, tablePtr->get_object_id());
 			lua_pushnil(L);
-			while (lua_next(L, -2) != 0)
+			try
 			{
-				function(stack_get<TKey>(L, -2).value(), stack_get<TValue>(L, -1).value());
+				while (lua_next(L, -2) != 0)
+				{
+					function(stack_get<TKey>(L, -2).value(), stack_get<TValue>(L, -1).value());
+					lua_pop(L, 1);
+				}
 				lua_pop(L, 1);
 			}
-			lua_pop(L, 1);
+			catch(const std::exception& e)
+			{
+				luaL_error(L, "While iterating over a table, key or value couldn't be retrieved or were of a wrong type");
+			}
 		}
 	};
 
@@ -445,27 +452,35 @@ namespace lua_w
 
 		// Function that will be invoked by Lua and call the required C function
 		template<typename TRet, typename... TArgs>
-		int registered_function(lua_State* L)
+		int registered_function(lua_State* L) noexcept
 		{
-			// Retrieve the pointer to the C function form the upvalues that were passed to lua when this closure was created
-			// You can think of upvalues as C++ lambda captures
-			// Explanation - https://www.lua.org/pil/27.3.3.html
-			// The pointer was passed as light user data so we retrieve it and cast to the required type
-			auto ptr = (FuncPtr_t<TRet, TArgs...>)lua_touserdata(L, lua_upvalueindex(1)); // C style cast cause of the void* type
 			// Get all of the arguments from the function
 			int argCounter = 1;
-			std::tuple<TArgs...> args = { stack_get<TArgs>(L, argCounter++).value() ... };
-			// C functions can return void or one value, so we only need to take care of two things
-			if constexpr (std::is_void_v<TRet>)
+			try
 			{
-				// If return type is void just call the function using apply
-				std::apply(ptr, std::move(args));
-				return 0; // Returning 0 means not leaving anything on the stack
+				// Retrieve the pointer to the C function form the upvalues that were passed to lua when this closure was created
+				// You can think of upvalues as C++ lambda captures
+				// Explanation - https://www.lua.org/pil/27.3.3.html
+				// The pointer was passed as light user data so we retrieve it and cast to the required type
+				auto ptr = (FuncPtr_t<TRet, TArgs...>)lua_touserdata(L, lua_upvalueindex(1)); // C style cast cause of the void* type
+				std::tuple<TArgs...> args = { stack_get<TArgs>(L, argCounter++).value() ... };
+				// C functions can return void or one value, so we only need to take care of two things
+				if constexpr (std::is_void_v<TRet>)
+				{
+					// If return type is void just call the function using apply
+					std::apply(ptr, std::move(args));
+					return 0; // Returning 0 means not leaving anything on the stack
+				}
+				else
+				{
+					stack_push<TRet>(L, std::apply(ptr, std::move(args)));
+					return 1; // We leave one value on the stack
+				}
 			}
-			else
+			catch(const std::exception& e)
 			{
-				stack_push<TRet>(L, std::apply(ptr, std::move(args)));
-				return 1; // We leave one value on the stack
+				luaL_error(L, "While calling a native function, argument %d. was missing or was of a wrong type", argCounter - 1);
+				return 0;
 			}
 		}
 	}
@@ -599,20 +614,28 @@ namespace lua_w
 		template<typename StoreType, class TClass, typename TRet, typename... TArgs>
 		int call_method_impl(lua_State* L)
 		{
-			// Get the method pointer form the storage struct
-			auto methodPtr = ((StoreType*)lua_touserdata(L, lua_upvalueindex(1)))->ptr;
 			int argCounter = 2;
-			// First argument is the pointer to the object to call the method on
-			std::tuple<TClass*, TArgs...> args = { (TClass*)lua_touserdata(L, 1), stack_get<TArgs>(L, argCounter++).value() ... };
-			if constexpr (std::is_void_v<TRet>)
+			try
 			{
-				std::apply(methodPtr, std::move(args));
-				return 0;
+				// Get the method pointer form the storage struct
+				auto methodPtr = ((StoreType*)lua_touserdata(L, lua_upvalueindex(1)))->ptr;
+				// First argument is the pointer to the object to call the method on
+				std::tuple<TClass*, TArgs...> args = { (TClass*)lua_touserdata(L, 1), stack_get<TArgs>(L, argCounter++).value() ... };
+				if constexpr (std::is_void_v<TRet>)
+				{
+					std::apply(methodPtr, std::move(args));
+					return 0;
+				}
+				else
+				{
+					stack_push(L, std::apply(methodPtr, std::move(args))); 
+					return 1; 
+				}
 			}
-			else
+			catch(const std::exception& e)
 			{
-				stack_push(L, std::apply(methodPtr, std::move(args)));
-				return 1;
+				luaL_error(L, "While calling a native method, argument %d. was missing or was of a wrong type", argCounter - 2);
+				return 0;
 			}
 		}
 
@@ -694,11 +717,19 @@ namespace lua_w
 			{				
 				add_constructor_impl([](lua_State* L) -> int
 				{
-					TClass* ptr = (TClass*)lua_newuserdata(L, sizeof(TClass)); // Allocate memory for the object
-					int argCount = 2; // Omit the first argument (it's the type table)
-					new(ptr) TClass{ stack_get<TArgs>(L, argCount++).value() ... }; // Call a inplace new constructor (Creates the object on the specified addres)
-					luaL_setmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
-					return 1;
+					int argCounter = 2; // Omit the first argument (it's the type table)
+					try
+					{
+						TClass* ptr = (TClass*)lua_newuserdata(L, sizeof(TClass)); // Allocate memory for the object
+						new(ptr) TClass{ stack_get<TArgs>(L, argCounter++).value() ... }; // Call a inplace new constructor (Creates the object on the specified addres)
+						luaL_setmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
+						return 1;
+					}
+					catch(const std::exception& e)
+					{
+						luaL_error(L, "While constructing a native object argument %d. was missing or was of a wrong type", argCounter - 2);
+						return 0;
+					}
 				});
 				
 			}
@@ -712,16 +743,25 @@ namespace lua_w
 				static_assert(std::is_default_constructible_v<TClass>, "'TClass' is not default constructible");
 				add_constructor_impl([](lua_State* L) -> int
 				{
-					TClass* ptr = (TClass*)lua_newuserdata(L, sizeof(TClass)); // Allocate memory for the object
-					if(lua_gettop(L) == 2) // Check if no arguments were passed first is the type table second is the created userdata
-						new(ptr) TClass(); // Call a default constructor (if no arguments were passed)
-					else
+					int argCounter = 2; // Omit the first argument (it's the type table)
+					try
 					{
-						int argCount = 2; // Omit the first argument (it's the type table)
-						new(ptr) TClass{ stack_get<TArgs>(L, argCount++).value() ... }; // Call a inplace new constructor (Creates the object on the specified addres)
+						TClass* ptr = (TClass*)lua_newuserdata(L, sizeof(TClass)); // Allocate memory for the object
+						if (lua_gettop(L) == 2) // Check if no arguments were passed first is the type table second is the created userdata
+							new(ptr) TClass(); // Call a default constructor (if no arguments were passed)
+						else
+						{
+							
+							new(ptr) TClass{ stack_get<TArgs>(L, argCounter++).value() ... }; // Call a inplace new constructor (Creates the object on the specified addres)
+						}
+						luaL_setmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
+						return 1;
 					}
-					luaL_setmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
-					return 1;
+					catch(const std::exception& e)
+					{
+						luaL_error(L, "While constructing a native object argument %d. was missing or was of a wrong type", argCounter - 2);
+						return 0;
+					}
 				});
 			}
 
