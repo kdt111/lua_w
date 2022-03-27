@@ -12,8 +12,8 @@ A `C++17`, header-only library implemented mostly as different templates that ai
 
 ### Library
 - Simple opening of specified `Lua` libraries
-- Stack operation made as type safe as possible (using `std::optional`)
-- Registering `C++` functions of an arbitrary signature to be used in `Lua` (Some limitations are mentioned in the "Limitations" section) 
+- Stack operation made as type safe as possible
+- Registering `C++` functions of an arbitrary signature to be used in `Lua` (even when those functions expect parameters passed by reference)
 - Calling `Lua` functions from `C++`
 - Storing `Lua` functions as `C++` objects and calling them form this object
 - Setting and getting global values from `Lua`
@@ -23,19 +23,21 @@ A `C++17`, header-only library implemented mostly as different templates that ai
 	- Keys and values can be of any supported type (type mixing in a single table is allowed)
 	- A `for_each` method that allows traversall of tables that have a constant key type and a constant value type
 - Binding custom classes to `Lua` and that includes:
-	- Ability to call arbitrary methods (both const and non-const; Some limitations are mentioned in the "Limitations" section)
+	- Ability to call arbitrary methods (both const and non-const)
 	- Ability to bind a constructor (one custom constructor or default constructor or both) so new instances of the class can be created in `Lua`
 	- Ability to automaticly detect and bind some custom operators to `Lua` (+, -, *, /, unary -, ==, <, <=)
 	- Ability to define custom behaviour for `Lua`'s metamethods (eg. define more operators than the detected ones)
 	- `Lua`'s garbage collector repects calls to destructors
 	- a custom `instanceof` function that allows to check in `Lua` if a varaible is some specific bound type
-	- Type safe retrieval of pointers from `Lua` using RTTI (you can opt-out of this feature)
+	- Inheritance support (limited to one parent type) with full support of virtual methods
+- Type safe retrieval of pointers from `Lua` using RTTI (you can opt-out of this feature)
 
 ... And all of this (and maybe something more in the future) in just about 1000 lines of code
 
 ## Usage
 - To use the libray simply include the header `lua_w.h` to your files (aside from `Lua` the only used dependencies are the standard library) 
-- A compiler and a standard library that both support `C++17` are required, as some `C++17` features are used (`if constexpr`, `std::optional`, some newer stuff form `type_traits` and some others)
+- A compiler and a standard library that both support `C++17` are required, as some `C++17` features are used (`if constexpr`, some newer stuff form `type_traits` and some others)
+- The only tested `Lua` version is `5.4`
 - The header file should be placed in a directory from which 
 ```c++
 #include <lua.hpp>
@@ -50,19 +52,13 @@ Opting out of this feature will make all pointer retrievals form `Lua` unsafe (t
 - The library doesn't use any platform specific headers, however due to time constraints I was only able to test it on Windows using MinGW (GCC 11.2.0)
 
 ## Limitations
-- Functions and methods that are registered can't have arguments and return values that are references (eg. `void print(const std::string& str)`). This is due to the fact that `std::optional` can't store references (and also `Lua` is a `C` library, so references don't mean anything to it). The simplest solution is to write a simple wrapper that uses pointers. Example:
-```c++
-int& function(const std::string& str);
-
-int* function_lua_wrapper(const char* str)
-{
-	return &function(std::string(str));
-}
-```
-- Since `Lua` has no default way of handeling function overaloading, so no automatic overloading of functions, operators and constructors is possible. You can probably implement this manually by checking what kind of arguments your function recieves, but it is beyond the scope of my skills to do so automaticly
+- By default this library doesn't handle `std::string`. I tried multiple times to make an interface for them, but no idea came to mind
+- Registering multiple overload of the same function is not supported. You have to register them under different names. 
+- The libary by default only supports at most two constructors, if you want more you can register static methods that implement those constructors.
+- Operators will only be automaticly detected when both of their arguments are of the same type as the bound class. If you want to overload operatos then you will have to implement them manually as metamethods
 - If you want to use `add_parent_type<TParentClass>()` register `TParentClass` first (If you won't then calling methods form the base type will not work). For simplicity only one base type is allowed (so no multiple inheritance)
-- If you override a method form a base type you have to register that override using `add_method()`. If you won't do that then the implementation form the base type will be called instead. (This happens becouse `Lua` is not aware of the override's existance)
-- Pointer safety uses RTTI (for `dynamic_cast`) this only happens when retrieving pointers form `Lua` AND `LUA_W_USE_PTR_SAFETY` is defined. Otherwise no additional checks are done. `Lua` provides no additional information to ensure that a cast is valid and we have to get this information form somewhere at runtime. If you don't want pointer safety just don't define 
+- Pointer safety uses RTTI (for `dynamic_cast`) this only happens when retrieving pointers form `Lua`. This check can't really be implemented in `Lua` as it has no knowlege of the `C++` type system and even if it could be done `dynamic_cast` will probably be faster
+- Due to the fact that they can't be represented as pointer rvalue references are NOT supported at all
 
 ## Examples
 ### Globals
@@ -201,13 +197,13 @@ int main()
 		end
 	)script");
 
-	std::cout << lua_w::call_lua_function<const char*>(L, "lua_func", 3.0, 50.0, 22.7).value_or("NO VALUE RETURNED!!!") << '\n';
+	std::cout << lua_w::call_lua_function<const char*>(L, "lua_func", 3.0, 50.0, 22.7).value() << '\n';
 	lua_w::call_lua_function_void(L, "echo", "Argument passed form C++");
 
 	auto returnedFunction = lua_w::call_lua_function<lua_w::Function>(L, "returns_a_function").value();
-	std::cout << "Should be 10 = " << returnedFunction.call<int>(3).value() << '\n'; // (x = 7) x + 3 = 10
-	std::cout << "Should be 15 = " << returnedFunction.call<int>(5).value() << '\n'; // (x = 10) x + 5 = 15
-	std::cout << "Should be 8 = " << returnedFunction.call<int>(-7).value() << '\n'; // (x = 15) x + (-7) = 8
+	std::cout << "Should return 10 = " << returnedFunction.call<int>(3).value() << '\n'; // (x = 7) x + 3 = 10
+	std::cout << "Should return 15 = " << returnedFunction.call<int>(5).value() << '\n'; // (x = 10) x + 5 = 15
+	std::cout << "Should return 8 = " << returnedFunction.call<int>(-7).value() << '\n'; // (x = 15) x + (-7) = 8
 
 	lua_close(L);
 }
@@ -215,8 +211,8 @@ int main()
 
 ### Binding classes
 ```c++
-#include <iostream>
 #include <cmath>
+#include <iostream>
 #define LUA_W_NO_PTR_SAFETY
 #include "lua_w.h"
 
@@ -224,7 +220,8 @@ class Object
 {
 public:
 	constexpr static const char* lua_type_name() { return "Object"; }
-	void print() const { std::cout << this << '\n'; }
+	unsigned long long get_address() const { return (unsigned long long)this; }
+	virtual void print() const { std::cout << '[' << this << "]\n"; }
 };
 
 class Vec2 : public Object
@@ -251,6 +248,8 @@ public:
 	constexpr static const char* lua_type_name() { return "Vec2"; }
 
 	static Vec2 one() { return Vec2(1.0, 1.0); }
+
+	void print() const override { std::cout << '(' << x << ", " << y << ")\n"; }
 };
 
 int main()
@@ -261,6 +260,7 @@ int main()
 	lua_w::register_instanceof_function(L);
 
 	lua_w::register_type<Object>(L)
+	.add_method("get_address", &Object::get_address)
 	.add_method("print", &Object::print);
 
 	lua_w::register_type<Vec2>(L)
@@ -289,7 +289,7 @@ int main()
 	})
 	.add_static_method("one", &Vec2::one)
 	.add_custom_and_default_constructors<double, double>();
-
+	
 	luaL_dostring(L, R"script(
 	function format_vec2(vec)
 		if instanceof(vec, Vec2) then
@@ -308,7 +308,8 @@ int main()
 	print("v1 = "..format_vec2(v1))
 	print("v2 = "..format_vec2(v2))
 
-	print("Using the inherited method")
+	print("[Inherited method] Address = "..v1:get_address())
+	print("Virtual print:")
 	v1:print()
 	
 	print("v1 + v2 = "..format_vec2(v1 + v2))
@@ -394,6 +395,55 @@ int main()
 		std::cout << "VALID\n";
 	else
 		std::cout << "INVALID\n";
+
+	lua_close(L);
+}
+```
+
+### Using references
+```c++
+#include <iostream>
+#define LUA_W_NO_PTR_SAFETY
+#include "lua_w.h"
+
+struct Object
+{
+	int i;
+	int get_i() const { return i; }
+	constexpr static const char* lua_type_name() { return "Object"; }
+};
+
+void modify_object(Object& obj, int newI)
+{
+	obj.i = newI;
+}
+
+Object toModify;
+
+Object& get_object()
+{
+	return toModify;
+}
+
+int main()
+{
+	lua_State* L = luaL_newstate();
+	lua_w::open_libs(L, lua_w::Libs::base);
+
+	lua_w::register_type<Object>(L).add_method("get_i", &Object::get_i);
+	lua_w::register_function(L, "get_object", &get_object);
+	lua_w::register_function(L, "modify_object", &modify_object);
+
+	std::cout << "In C++ i = " << toModify.get_i() << " (Should be 0)\n";
+
+	luaL_dostring(L, R"script(
+		local obj = get_object()
+		print("In Lua i = "..obj:get_i().." (Should be 0)")
+		modify_object(obj, 1000)
+		print("In Lua (after modifications) i = "..obj:get_i().." (Should be 1000)")
+	)script");
+
+	std::cout << "In C++ (after modifications) i = " << toModify.get_i() << " (Should be 1000)\n";
 
 	lua_close(L);
 }
