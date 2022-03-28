@@ -406,23 +406,23 @@ int main()
 #define LUA_W_NO_PTR_SAFETY
 #include "lua_w.h"
 
-struct Object
-{
-	int i;
-	int get_i() const { return i; }
-	constexpr static const char* lua_type_name() { return "Object"; }
-};
+struct Object { int i; };
+
+Object toModify;
 
 void modify_object(Object& obj, int newI)
 {
 	obj.i = newI;
 }
 
-Object toModify;
-
 Object& get_object()
 {
 	return toModify;
+}
+
+int get_i(const Object& obj)
+{
+	return obj.i;
 }
 
 int main()
@@ -430,20 +430,21 @@ int main()
 	lua_State* L = luaL_newstate();
 	lua_w::open_libs(L, lua_w::Libs::base);
 
-	lua_w::register_type<Object>(L).add_method("get_i", &Object::get_i);
 	lua_w::register_function(L, "get_object", &get_object);
 	lua_w::register_function(L, "modify_object", &modify_object);
+	lua_w::register_function(L, "get_i", &get_i);
 
-	std::cout << "In C++ i = " << toModify.get_i() << " (Should be 0)\n";
+	std::cout << "In C++ i = " << toModify.i << " (Should be 0)\n";
 
-	luaL_dostring(L, R"script(
+	if(luaL_dostring(L, R"script(
 		local obj = get_object()
-		print("In Lua i = "..obj:get_i().." (Should be 0)")
+		print("In Lua i = "..get_i(obj).." (Should be 0)")
 		modify_object(obj, 1000)
-		print("In Lua (after modifications) i = "..obj:get_i().." (Should be 1000)")
-	)script");
+		print("In Lua (after modifications) i = "..get_i(obj).." (Should be 1000)")
+	)script"))
+		std::cout << "Error: " << lua_tostring(L, -1) << '\n';
 
-	std::cout << "In C++ (after modifications) i = " << toModify.get_i() << " (Should be 1000)\n";
+	std::cout << "In C++ (after modifications) i = " << toModify.i << " (Should be 1000)\n";
 
 	lua_close(L);
 }

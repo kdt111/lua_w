@@ -184,15 +184,6 @@ namespace lua_w
 				#endif
 				return (TPointer)lua_touserdata(L, idx);
 		}
-
-		template<typename TPointer>
-		void push_pointer_to_stack(lua_State* L, const void* value)
-		{
-			using TPointerNoPtr = std::remove_pointer_t<TPointer>;
-			lua_pushlightuserdata(L, (void*)value);
-			if constexpr (internal::has_lua_type_name_v<TPointerNoPtr>)
-				luaL_setmetatable(L, TPointerNoPtr::lua_type_name()); // Set the metatable for the pointer (will not set it if the type is not registered)
-		}
 	}
 
 	//----------------------------
@@ -394,9 +385,9 @@ namespace lua_w
 		else if constexpr (std::is_same_v<value_t, const char*> || std::is_same_v <value_t, char*>) // Lua makes a copy of the string
 			lua_pushstring(L, value);
 		else if constexpr (std::is_pointer_v<value_t>)
-			internal::push_pointer_to_stack<value_t>(L, value);
+			lua_pushlightuserdata(L, (void*)value);
 		else if constexpr (std::is_lvalue_reference_v<TValue>)
-			internal::push_pointer_to_stack<value_t*>(L, &value);
+			lua_pushlightuserdata(L, (void*)&value);
 		else if constexpr (internal::has_lua_type_name_v<value_t>)
 		{
 			static_assert(std::is_copy_constructible_v<value_t>, "To push a full object to the stack this object has to be copy constructible");
