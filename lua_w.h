@@ -90,6 +90,8 @@ namespace lua_w
 		Result() : isValid(false) {}
 		// Constructs a valid result with the passed in data
 		Result(const T& value) : isValid(true) { new(storage) T{value}; }
+		// Copy constructor for properly coppying the held value
+		Result(const Result& value) : isValid(value.isValid) { if constexpr(!std::is_trivially_copy_constructible_v<T>) new(storage) T {*((T*)value.storage)}; }
 		// Destroys the resulting object if it is required
 		~Result() { if constexpr(!std::is_trivially_destructible_v<T>) ((T*)storage)->~T(); }
 		Result& operator=(const Result&) = delete;
