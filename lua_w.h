@@ -638,6 +638,24 @@ namespace lua_w
 			}
 		}
 
+		void get_newindex_mt(lua_State* L)
+		{
+			lua_pushliteral(L, "LUA_W_TYPE_NEWINDEX");
+			if(lua_gettable(L, LUA_REGISTRYINDEX) == LUA_TFUNCTION)
+				return; // Function already registered and on the stack
+			
+			lua_pop(L, 1); // pop nil
+			
+			lua_pushcfunction(L, [](lua_State* L) -> int
+			{
+				luaL_error(L, "Attempted to modify a native registered type. That is not allowed");
+				return 0;
+			});
+			lua_pushliteral(L, "LUA_W_TYPE_NEWINDEX");
+			lua_pushvalue(L, -2);
+			lua_settable(L, LUA_REGISTRYINDEX);
+		}
+
 		// Class for wrapping a type to be used in lua
 		// You don't need to store objects of this class, just call the register_type function
 		template<class TClass>
@@ -704,6 +722,12 @@ namespace lua_w
 
 				lua_pushstring(L, name);
 				lua_setfield(L, -2, "__name");
+
+				get_newindex_mt(L);
+				lua_setfield(L, -2, "__newindex");
+
+				lua_pushliteral(L, "Can't access the metatable of a registered type");
+				lua_setfield(L, -2, "__metatable");
 
 				lua_pop(L, 3); // Pop the type table, the metatable, and the nil that was given when checking if type was registerd
 			}
