@@ -495,18 +495,24 @@ namespace lua_w
 		internal::call_lua_func_impl_void<TArgs...>(L, std::move(funcArgs) ...);
 	}
 
-	// Registers a C function of arbitrary signature into the lua VM.
-	// The function will be called as normal if all arguments are present and have required types
+	// Creates a C function wrapper and LEAVES it on top of the stack
 	template<typename TRet, typename... TArgs>
-	void register_function(lua_State* L, const char* funcName, internal::FuncPtr_t<TRet, TArgs...> funcPtr) noexcept
+	void wrap_function(lua_State* L, internal::FuncPtr_t<TRet, TArgs...> funcPtr) noexcept
 	{
 		// Push the pointer to the function as light use data (so a pointer to anything) 
 		lua_pushlightuserdata(L, (void*)funcPtr); // C style cast has to be made to avoid compilation errors
 		// Register the function as a C closure (explanation - https://www.lua.org/pil/27.3.3.html)
 		// And will know what C function to call
 		lua_pushcclosure(L, &internal::registered_function<TRet, TArgs...>, 1);
-		// Assign the pushed closure a name to make it a global function
-		lua_setglobal(L, funcName);
+	}
+
+	// Registers a C function of arbitrary signature into the lua VM.
+	// The function will be called as normal if all arguments are present and have required types
+	template<typename TRet, typename... TArgs>
+	void register_function(lua_State* L, const char* funcName, internal::FuncPtr_t<TRet, TArgs...> funcPtr) noexcept
+	{	
+		wrap_function(L, funcPtr); // Wrap the function as a C closure
+		lua_setglobal(L, funcName); // Assign the pushed closure a name to make it a global function
 	}
 
 	//----------------------------
@@ -940,8 +946,7 @@ namespace lua_w
 				// Works the same as registering a normal function. The only difference is that this function will be called from the type table
 				luaL_getmetatable(L, TClass::lua_type_name());
 				lua_getfield(L, -1, "__index"); // __index field is the type table
-				lua_pushlightuserdata(L, (void*)methodPtr);
-				lua_pushcclosure(L, &internal::registered_function<TRet, TArgs...>, 1);
+				wrap_function(L, methodPtr);
 				lua_setfield(L, -2, name);
 				lua_pop(L, 2);
 				return *this;
