@@ -75,66 +75,15 @@ namespace lua_w
 	class LuaBaseObject { public: virtual ~LuaBaseObject() {} };
 	#endif
 
-	//----------------------------
-	// Result class
-	//----------------------------
-
-	// Class that holds a result of a value retrieval from Lua. Can be empty or hold a value
-	template<typename T>
-	class Result
-	{
-		char storage[sizeof(T)]; // Type erased storage for the object
-		const bool isValid; // Check if this object holds valid data
-	public:
-		// Constructs a invalid result
-		Result() : isValid(false) {}
-		// Constructs a valid result with the passed in data
-		Result(const T& value) : isValid(true) { new(storage) T{value}; }
-		// Copy constructor for properly coppying the held value
-		Result(const Result& value) : isValid(value.isValid) { if constexpr(!std::is_trivially_copy_constructible_v<T>) new(storage) T {*((T*)value.storage)}; }
-		// Destroys the resulting object if it is required
-		~Result() { if constexpr(!std::is_trivially_destructible_v<T>) ((T*)storage)->~T(); }
-		Result& operator=(const Result&) = delete;
-		// Returns true if the Result holds a value
-		inline bool has_value() const noexcept { return isValid; }
-		// Returns the Result's value. If it doesn't hold a value then a exception is thrown
-		inline T value() const { return isValid ? *((T*)storage) : throw std::exception(); }
-		// Returns the Result's value. If it doesn't hold a value then 'other' is returned
-		inline T value_or(const T& other) const noexcept { return isValid ? *((T*)storage) : other; }
-		// The same as 'has_value()'
-		explicit operator bool() const noexcept { return isValid; }
-	};
-
-	// Result specialization for holding references to objects
-	template<typename T>
-	class Result<T&>
-	{
-		T* pointer; // Pointer to the object that this reference represents
-	public:
-		// Constructs a invalid result
-		Result() : pointer(nullptr) {}
-		// Constructs a valid result with the passed in data
-		Result(const T& value) : pointer(&(T&)value) {}
-		Result& operator=(const Result&) = delete;
-		// Returns true if the Result holds a value
-		bool has_value() const noexcept { return pointer; }
-		// Returns the Result's value. If it doesn't hold a value then a exception is thrown
-		T& value() const { return pointer ? *pointer : throw std::exception(); }
-		// Returns the Result's value. If it doesn't hold a value then 'other' is returned
-		T& value_or(const T& other) const noexcept { return pointer ? *pointer : other; }
-		// The same as 'has_value()'
-		explicit operator bool() const noexcept { return pointer; }
-	};
-
-	template<typename TValue>
-	void stack_push(lua_State* L, const TValue& value) noexcept;
-
-	template<typename TValue>
-	Result<TValue> stack_get(lua_State* L, int idx) noexcept;
-
 	// Internal data for functions and tables
 	namespace internal
 	{
+		template<typename TValue>
+		void stack_push(lua_State* L, const TValue& value) noexcept;
+
+		template<typename TValue>
+		TValue stack_get(lua_State* L, int idx);
+
 		// Object that holds a holds a reference to a Lua object so it is accessible in C++ and will not be garbage collected by Lua
 		struct LuaObjectReference
 		{
@@ -150,20 +99,19 @@ namespace lua_w
 
 		// Calls a lua function that is already on the stack. This function can have one return value
 		template<typename TRet, typename... TArgs>
-		Result<TRet> call_lua_func_impl(lua_State* L, TArgs... args)
+		TRet call_lua_func_impl(lua_State* L, TArgs... args)
 		{
-			(stack_push(L, args), ...); // Push all of the arguments
+			(internal::stack_push(L, args), ...); // Push all of the arguments
 			lua_call(L, sizeof...(args), 1);
-			auto retVal = stack_get<TRet>(L, -1); // get the value form the stack and return it
+			auto retVal = internal::stack_get<TRet>(L, -1); // get the value form the stack and return it
 			lua_pop(L, 1);
 			return retVal;
 		}
 
-		// Calls a lua function that is already on the stack. This function returns nothing
 		template<typename... TArgs>
-		void call_lua_func_impl_void(lua_State* L, TArgs... args)
+		void call_lua_func_impl_no_ret(lua_State* L, TArgs... args)
 		{
-			(stack_push(L, args), ...); // Push all of the arguments
+			(internal::stack_push(L, args), ...); // Push all of the arguments
 			lua_call(L, sizeof...(args), 0);
 		}
 
@@ -173,17 +121,6 @@ namespace lua_w
 
 		template<class T, typename TKey, typename TValue>
 		constexpr bool for_each_matches_v<T, TKey, TValue, std::void_t<decltype(std::declval<T>()(std::declval<TKey>(), std::declval<TValue>()))>> = true;
-	
-		template<typename TPointer>
-		TPointer get_pointer_from_stack(lua_State* L, int idx)
-		{
-			#ifndef LUA_W_NO_PTR_SAFETY
-			if constexpr (std::is_convertible_v<TPointer, LuaBaseObject*>)
-				return dynamic_cast<TPointer>((LuaBaseObject*)lua_touserdata(L, idx));
-			else // WARNING!: There is no way to ensure that the pointer is of the appropriate type
-				#endif
-				return (TPointer)lua_touserdata(L, idx);
-		}
 	}
 
 	//----------------------------
@@ -239,7 +176,7 @@ namespace lua_w
 		// Returns a value that was keyed by the passed in key
 		// TKey, and TValue can be anything that can be pushed and pulled from the stack
 		template<typename TKey, typename TValue>
-		Result<TValue> get(const TKey& key) const noexcept
+		TValue get(const TKey& key) const
 		{
 			using key_t = std::decay_t<TKey>;
 			lua_State* L = tablePtr->L;
@@ -253,11 +190,11 @@ namespace lua_w
 				lua_geti(L, -1, (lua_Integer)key);
 			else
 			{
-				stack_push(L, key);
+				internal::stack_push(L, key);
 				lua_gettable(L, -2);
 			}
 
-			auto retVal = stack_get<TValue>(L, -1);
+			auto retVal = internal::stack_get<TValue>(L, -1);
 
 			lua_pop(L, 2);
 			return retVal;
@@ -274,23 +211,23 @@ namespace lua_w
 
 			if constexpr (std::is_same_v<key_t, const char*> || std::is_same_v<key_t, char*>)
 			{
-				stack_push(L, value);
+				internal::stack_push(L, value);
 				lua_setfield(L, -2, key);
 			}
 			else if constexpr (std::is_same_v<key_t, std::string>)
 			{
-				stack_push(L, value);
+				internal::stack_push(L, value);
 				lua_setfield(L, -2, key.c_str());
 			}
 			else if constexpr (std::is_convertible_v<key_t, lua_Integer>)
 			{
-				stack_push(L, value);
+				internal::stack_push(L, value);
 				lua_seti(L, -2, (lua_Integer)key);
 			}
 			else
 			{
-				stack_push(L, key);
-				stack_push(L, value);
+				internal::stack_push(L, key);
+				internal::stack_push(L, value);
 				lua_settable(L, -3);
 			}
 			lua_pop(L, 1);
@@ -307,7 +244,7 @@ namespace lua_w
 			{
 				while (lua_next(L, -2) != 0)
 				{
-					function(stack_get<TKey>(L, -2).value(), stack_get<TValue>(L, -1).value());
+					function(internal::stack_get<TKey>(L, -2), internal::stack_get<TValue>(L, -1));
 					lua_pop(L, 1);
 				}
 				lua_pop(L, 1);
@@ -331,20 +268,24 @@ namespace lua_w
 	public:
 		// Calls a function and expects something in return
 		template<typename TRet, typename... TArgs>
-		Result<TRet> call(TArgs... args) const noexcept
+		TRet call(TArgs... args) const noexcept
 		{
 			lua_State* L = funcPtr->L;
 			lua_rawgetp(L, LUA_REGISTRYINDEX, funcPtr->get_object_id());
-			return internal::call_lua_func_impl<TRet, TArgs...>(L, std::move(args) ...);
+			if constexpr (std::is_void_v<TRet>)
+				internal::call_lua_func_impl_no_ret<TArgs...>(L, std::move(args) ...);
+			else
+				return internal::call_lua_func_impl<TRet, TArgs...>(L, std::move(args) ...);
 		}
 
-		// Calls a function and expects nothing is return
+		// A call operator for functions that don't require a return value
+		// This can only be used when you don't need the return value of the function. Otherwise use the 'call' function
 		template<typename... TArgs>
-		void call_void(TArgs... args) const noexcept
+		void operator()(TArgs... args)
 		{
 			lua_State* L = funcPtr->L;
 			lua_rawgetp(L, LUA_REGISTRYINDEX, funcPtr->get_object_id());
-			internal::call_lua_func_impl_void<TArgs...>(L, std::move(args) ...);
+			internal::call_lua_func_impl_no_ret<TArgs...>(L, std::move(args) ...);
 		}
 
 		// Pushes the function that this object holds on to the stack
@@ -371,66 +312,73 @@ namespace lua_w
 	// STACK MANIPULATIONS
 	//----------------------------
 
-	// Pushes the TValue on to the stack (can push numbers, bools, c-style strings, lua_w::Tables, all pointers and copies of objects registerd in the lua VM)
-	template<typename TValue>
-	void stack_push(lua_State* L, const TValue& value) noexcept
+	namespace internal
 	{
-		using value_t = std::decay_t<TValue>; // Remove references, const and volatile kewyords to better match the types
-		if constexpr (std::is_same_v<value_t, Table> || std::is_same_v<value_t, Function>) // Table and Function have the same interface
-			value.push_to_stack(L);
-		else if constexpr (std::is_same_v<value_t, bool>)
-			lua_pushboolean(L, value);
-		else if constexpr (std::is_convertible_v<value_t, lua_Number>)
-			lua_pushnumber(L, static_cast<lua_Number>(value)); // Can push anything convertible to a lua_Number (double by default)
-		else if constexpr (std::is_same_v<value_t, const char*> || std::is_same_v <value_t, char*>) // Lua makes a copy of the string
-			lua_pushstring(L, value);
-		else if constexpr (std::is_pointer_v<value_t>)
-			lua_pushlightuserdata(L, (void*)value);
-		else if constexpr (std::is_lvalue_reference_v<TValue>)
-			lua_pushlightuserdata(L, (void*)&value);
-		else if constexpr (internal::has_lua_type_name_v<value_t>)
+		// NOTE: You only need to use this function if you want to directly manipulate the stack
+		// Pushes the TValue on to the stack (can push numbers, bools, c-style strings, lua_w::Tables, lua_w::Functions, all pointers and copies of objects registerd in the lua VM)
+		template<typename TValue>
+		void stack_push(lua_State* L, const TValue& value) noexcept
 		{
-			static_assert(std::is_copy_constructible_v<value_t>, "To push a full object to the stack this object has to be copy constructible");
-			// Allocate memory, call copy constructor, set metatable...
-			TValue* ptr = (TValue*)lua_newuserdata(L, sizeof(TValue));
-			new(ptr) TValue(value);
-			luaL_setmetatable(L, std::remove_pointer_t<value_t>::lua_type_name());
+			static_assert(!std::is_reference_v<TValue>, "Using references is not supported, use pointers instead");
+			using value_t = std::decay_t<TValue>; // Remove references, const and volatile kewyords to better match the types
+			if constexpr (std::is_same_v<value_t, Table> || std::is_same_v<value_t, Function>) // Table and Function have the same interface
+				value.push_to_stack(L);
+			else if constexpr (std::is_same_v<value_t, bool>)
+				lua_pushboolean(L, value);
+			else if constexpr (std::is_convertible_v<value_t, lua_Number>)
+				lua_pushnumber(L, static_cast<lua_Number>(value)); // Can push anything convertible to a lua_Number (double by default)
+			else if constexpr (std::is_same_v<value_t, const char*> || std::is_same_v <value_t, char*>) // Lua makes a copy of the string
+				lua_pushstring(L, value);
+			else if constexpr (std::is_pointer_v<value_t>)
+				lua_pushlightuserdata(L, (void*)value);
+			else if constexpr (internal::has_lua_type_name_v<value_t>)
+			{
+				static_assert(std::is_copy_constructible_v<value_t>, "To push a full object to the stack this object has to be copy constructible");
+				// Allocate memory, call copy constructor, set metatable...
+				TValue* ptr = (TValue*)lua_newuserdata(L, sizeof(TValue));
+				new(ptr) TValue(value);
+				luaL_setmetatable(L, std::remove_pointer_t<value_t>::lua_type_name());
+			}
+			else
+				internal::no_match(); // No matching type was found
 		}
-		else
-			internal::no_match(); // No matching type was found
-	}
 
-	// Returns a value form the lua stack on the position idx if it exists or can be converted to the TValue type, otherwise returns an empty optional
-	// idx = 1 is the first element from the BOTTOM of the stack
-	// idx = -1 is the first element from the TOP of the stack
-	// WARNING: Pointers (including const char*) may or may not be managed by Lua so try to be carefull when using them (especialy storing them somewhere for later use, as they can get GC'ied by Lua)
-	template<typename TValue>
-	Result<TValue> stack_get(lua_State* L, int idx) noexcept
-	{
-		using value_t = std::decay_t<TValue>; // Remove references, const and volatile kewyords to better match the types
-		if constexpr (std::is_same_v<value_t, Function>)
-			return lua_isfunction(L, idx) ? Result(Function::get_form_stack(L, idx)) : Result<TValue>();
-		else if constexpr (std::is_same_v<value_t, Table>)
-			return lua_istable(L, idx) ? Result(Table::get_form_stack(L, idx)) : Result<TValue>();
-		else if constexpr (std::is_same_v <value_t, bool>)
-			return lua_isboolean(L, idx) ? Result(lua_toboolean(L, idx)) : Result<TValue>();
-		else if constexpr (std::is_convertible_v<value_t, lua_Number>)
-			return lua_isnumber(L, idx) ? Result(static_cast<value_t>(lua_tonumber(L, idx))) : Result<TValue>();
-		else if constexpr (std::is_same_v<value_t, const char*>)
-			return lua_isstring(L, idx) ? Result(lua_tostring(L, idx)) : Result<TValue>();
-		else if constexpr (std::is_pointer_v<value_t>)
+		// NOTE: You only need to use this function if you want to directly manipulate the stack
+		// Returns a value from the provided stack position. If the value can't be converted to the required type this function will throw an exception
+		// Pointers may be managed by Lua so be careful if you are taking ownership of them
+		template<typename TValue>
+		TValue stack_get(lua_State* L, int idx)
 		{
-			TValue ptr = internal::get_pointer_from_stack<value_t>(L, idx);
-			return ptr ? Result(ptr) : Result<TValue>();
+			static_assert(!std::is_reference_v<TValue>, "Using references is not supported, use pointers instead");
+			using value_t = std::decay_t<TValue>; // Remove references, const and volatile kewyords to better match the types
+			if constexpr (std::is_same_v<value_t, Function>)
+				return lua_isfunction(L, idx) ? Function::get_form_stack(L, idx) : throw std::exception();
+			else if constexpr (std::is_same_v<value_t, Table>)
+				return lua_istable(L, idx) ? Table::get_form_stack(L, idx) : throw std::exception();
+			else if constexpr (std::is_same_v <value_t, bool>)
+				return lua_isboolean(L, idx) ? lua_toboolean(L, idx) : throw std::exception();
+			else if constexpr (std::is_convertible_v<value_t, lua_Number>)
+				return lua_isnumber(L, idx) ? static_cast<TValue>(lua_tonumber(L, idx)) : throw std::exception();
+			else if constexpr (std::is_same_v<value_t, const char*>)
+				return lua_isstring(L, idx) ? lua_tostring(L, idx) : throw std::exception();
+			else if constexpr (std::is_pointer_v<value_t>)
+			{
+				#ifndef LUA_W_NO_PTR_SAFETY
+				if constexpr (std::is_convertible_v<value_t, LuaBaseObject*>)
+				{
+					TValue ptr = dynamic_cast<TValue>((LuaBaseObject*)lua_touserdata(L, idx));
+					if(ptr)
+						return ptr;
+					else
+						throw std::exception();
+				}
+				else // WARNING!: There is no way to ensure that the pointer is of the appropriate type (we can only check it it is no null)
+				#endif
+					return (TValue)lua_touserdata(L, idx);
+			}
+			else
+				internal::no_match();
 		}
-		else if constexpr (std::is_lvalue_reference_v<TValue>)
-		{
-			using Ptr_t = std::remove_reference_t<TValue>*;
-			Ptr_t ptr = internal::get_pointer_from_stack<Ptr_t>(L, idx);
-			return ptr ? Result<TValue>(*ptr) : Result<TValue>();
-		}
-		else
-			internal::no_match();
 	}
 
 	//----------------------------
@@ -456,7 +404,7 @@ namespace lua_w
 				// Explanation - https://www.lua.org/pil/27.3.3.html
 				// The pointer was passed as light user data so we retrieve it and cast to the required type
 				auto ptr = (FuncPtr_t<TRet, TArgs...>)lua_touserdata(L, lua_upvalueindex(1)); // C style cast cause of the void* type
-				std::tuple<TArgs...> args = { stack_get<TArgs>(L, argCounter++).value() ... };
+				std::tuple<TArgs...> args = { internal::stack_get<TArgs>(L, argCounter++) ... };
 				// C functions can return void or one value, so we only need to take care of two things
 				if constexpr (std::is_void_v<TRet>)
 				{
@@ -466,7 +414,7 @@ namespace lua_w
 				}
 				else
 				{
-					stack_push<TRet>(L, std::apply(ptr, std::move(args)));
+					internal::stack_push<TRet>(L, std::apply(ptr, std::move(args)));
 					return 1; // We leave one value on the stack
 				}
 			}
@@ -480,21 +428,16 @@ namespace lua_w
 
 	// Calls a Lua function with the arguments and an expected return type
 	template<typename TRet, typename... TArgs>
-	Result< TRet > call_lua_function(lua_State* L, const char* funcName, TArgs... funcArgs) noexcept
+	TRet call_lua_function(lua_State* L, const char* funcName, TArgs... funcArgs)
 	{
 		// nodiscard helps with overload resolution. If the return value is discarded the compiler will choose the overload that returns void
 		lua_getglobal(L, funcName); // Get function by name
-		return internal::call_lua_func_impl<TRet, TArgs...>(L, std::move(funcArgs) ...);
+		if constexpr (std::is_void_v<TRet>)
+			internal::call_lua_func_impl_no_ret<TArgs...>(L, std::move(funcArgs) ...);
+		else
+			return internal::call_lua_func_impl<TRet, TArgs...>(L, std::move(funcArgs) ...);
 	}
 	
-	// Calls a Lua function with the arguments. This function returns nothing
-	template<typename... TArgs>
-	void call_lua_function_void(lua_State* L, const char* funcName, TArgs... funcArgs) noexcept
-	{
-		lua_getglobal(L, funcName); // Get function by name
-		internal::call_lua_func_impl_void<TArgs...>(L, std::move(funcArgs) ...);
-	}
-
 	// Creates a C function wrapper and LEAVES it on top of the stack
 	template<typename TRet, typename... TArgs>
 	void wrap_function(lua_State* L, internal::FuncPtr_t<TRet, TArgs...> funcPtr) noexcept
@@ -519,22 +462,39 @@ namespace lua_w
 	// GLOBAL VALUES
 	//----------------------------
 
-	// Attempts to get a global value form the lua VM. If the value is not found or the type doesn't match then returns a empty optional
+	// Attempts to get a global value form the lua VM.
+	// If the global doen't exist or is of a wrong type this function throws an exception
+	// If you don't want to handle exceptions check beforhand if everything matches using 'has_global'
 	template<typename TValue>
-	inline Result<TValue> get_global(lua_State* L, const char* globalName) noexcept
+	TValue get_global(lua_State* L, const char* globalName)
 	{
 		lua_getglobal(L, globalName); // Attempt to get a global by name, the value will be pushed to the lua stack
-		auto value = stack_get<TValue>(L, -1); // Get the value form the stack
+		auto value = internal::stack_get<TValue>(L, -1); // Get the value form the stack
 		lua_pop(L, 1); // Pop the value of the stack, so it doesn't stay there
 		return value;
 	}
 
 	// Creates or sets a global value in the lua VM
 	template<typename TValue>
-	inline void set_global(lua_State* L, const char* globalName, const TValue& value) noexcept
+	void set_global(lua_State* L, const char* globalName, const TValue& value) noexcept
 	{
-		stack_push(L, value); // Push the value to the stack
+		internal::stack_push(L, value); // Push the value to the stack
 		lua_setglobal(L, globalName); // Bind a global name to this value
+	}
+
+	// Allows to safely check if a global exists and has the required type
+	template<typename TValue>
+	bool has_global(lua_State* L, const char* globalName) noexcept
+	{
+		try 
+		{ 
+			get_global<TValue>(L, globalName); 
+			return true; 
+		}
+		catch(const std::exception& e)
+		{
+			return false;
+		}
 	}
 
 	//----------------------------
@@ -619,7 +579,7 @@ namespace lua_w
 				// Get the method pointer form the storage struct
 				auto methodPtr = ((StoreType*)lua_touserdata(L, lua_upvalueindex(1)))->ptr;
 				// First argument is the pointer to the object to call the method on
-				std::tuple<TClass*, TArgs...> args = { (TClass*)lua_touserdata(L, 1), stack_get<TArgs>(L, argCounter++).value() ... };
+				std::tuple<TClass*, TArgs...> args = { (TClass*)lua_touserdata(L, 1), internal::stack_get<TArgs>(L, argCounter++) ... };
 				if constexpr (std::is_void_v<TRet>)
 				{
 					std::apply(methodPtr, std::move(args));
@@ -627,7 +587,7 @@ namespace lua_w
 				}
 				else
 				{
-					stack_push(L, std::apply(methodPtr, std::move(args))); 
+					internal::stack_push(L, std::apply(methodPtr, std::move(args)));
 					return 1; 
 				}
 			}
@@ -636,24 +596,6 @@ namespace lua_w
 				luaL_error(L, "While calling a native method, argument %d. was missing or was of a wrong type", argCounter - 2);
 				return 0;
 			}
-		}
-
-		void get_newindex_mt(lua_State* L)
-		{
-			lua_pushliteral(L, "LUA_W_TYPE_NEWINDEX");
-			if(lua_gettable(L, LUA_REGISTRYINDEX) == LUA_TFUNCTION)
-				return; // Function already registered and on the stack
-			
-			lua_pop(L, 1); // pop nil
-			
-			lua_pushcfunction(L, [](lua_State* L) -> int
-			{
-				luaL_error(L, "Attempted to modify a native registered type. That is not allowed");
-				return 0;
-			});
-			lua_pushliteral(L, "LUA_W_TYPE_NEWINDEX");
-			lua_pushvalue(L, -2);
-			lua_settable(L, LUA_REGISTRYINDEX);
 		}
 
 		// Class for wrapping a type to be used in lua
@@ -723,9 +665,6 @@ namespace lua_w
 				lua_pushstring(L, name);
 				lua_setfield(L, -2, "__name");
 
-				get_newindex_mt(L);
-				lua_setfield(L, -2, "__newindex");
-
 				lua_pushliteral(L, "Can't access the metatable of a registered type");
 				lua_setfield(L, -2, "__metatable");
 
@@ -744,7 +683,7 @@ namespace lua_w
 					try
 					{
 						TClass* ptr = (TClass*)lua_newuserdata(L, sizeof(TClass)); // Allocate memory for the object
-						new(ptr) TClass{ stack_get<TArgs>(L, argCounter++).value() ... }; // Call a inplace new constructor (Creates the object on the specified addres)
+						new(ptr) TClass{ internal::stack_get<TArgs>(L, argCounter++).value() ... }; // Call a inplace new constructor (Creates the object on the specified addres)
 						luaL_setmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
 						return 1;
 					}
@@ -775,7 +714,7 @@ namespace lua_w
 						else
 						{
 							
-							new(ptr) TClass{ stack_get<TArgs>(L, argCounter++).value() ... }; // Call a inplace new constructor (Creates the object on the specified addres)
+							new(ptr) TClass{ internal::stack_get<TArgs>(L, argCounter++) ... }; // Call a inplace new constructor (Creates the object on the specified addres)
 						}
 						luaL_setmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
 						return 1;
@@ -803,7 +742,7 @@ namespace lua_w
 							return 0;
 						TClass* lhs = (TClass*)lua_touserdata(L, 1);
 						TClass* rhs = (TClass*)lua_touserdata(L, 2);
-						stack_push<TClass>(L, *lhs + *rhs);
+						internal::stack_push<TClass>(L, *lhs + *rhs);
 						return 1;
 					});
 					lua_setfield(L, -2, "__add");
@@ -818,7 +757,7 @@ namespace lua_w
 							return 0;
 						TClass* lhs = (TClass*)lua_touserdata(L, 1);
 						TClass* rhs = (TClass*)lua_touserdata(L, 2);
-						stack_push<TClass>(L, *lhs - *rhs);
+						internal::stack_push<TClass>(L, *lhs - *rhs);
 						return 1;
 					});
 					lua_setfield(L, -2, "__sub");
@@ -833,7 +772,7 @@ namespace lua_w
 							return 0;
 						TClass* lhs = (TClass*)lua_touserdata(L, 1);
 						TClass* rhs = (TClass*)lua_touserdata(L, 2);
-						stack_push<TClass>(L, *lhs * *rhs);
+						internal::stack_push<TClass>(L, *lhs * *rhs);
 						return 1;
 					});
 					lua_setfield(L, -2, "__mul");
@@ -848,7 +787,7 @@ namespace lua_w
 							return 0;
 						TClass* lhs = (TClass*)lua_touserdata(L, 1);
 						TClass* rhs = (TClass*)lua_touserdata(L, 2);
-						stack_push<TClass>(L, *lhs / *rhs);
+						internal::stack_push<TClass>(L, *lhs / *rhs);
 						return 1;
 					});
 					lua_setfield(L, -2, "__div");
@@ -862,7 +801,7 @@ namespace lua_w
 						if (!lua_isuserdata(L, 1))
 							return 0;
 						TClass* obj = (TClass*)lua_touserdata(L, 1);
-						stack_push<TClass>(L, -*obj);
+						internal::stack_push<TClass>(L, -*obj);
 						return 1;
 					});
 					lua_setfield(L, -2, "__unm");
@@ -1009,28 +948,18 @@ namespace lua_w
 		return internal::TypeWrapper<TClass>(L);
 	}
 
-	// Registers a global function called 'instanceof' that takes two arguments (userdata and a type table)
-	// Returns true in lua when the userdata has the same type as the type table
-	void register_instanceof_function(lua_State* L) noexcept
+	// Overrides a global function called 'type'. It will work the same as the regular 'type' function with the ability to detect custom types
+	void register_type_function(lua_State* L) noexcept
 	{
-		// Check if a global function 'instanceof is registered'
-		if (lua_getglobal(L, "instanceof") == LUA_TFUNCTION) // Check if the function is already registered
-		{
-			lua_pop(L, 1); // Pop the function
-			return;
-		}
-		lua_pop(L, 1); // Pop the nill
-
 		lua_pushcfunction(L, [](lua_State* L) -> int
 		{
-			// Get the '__index' metafield of the first object and compare it to the second argument (the type table)
-			if (luaL_getmetafield(L, 1, "__index") != LUA_TNIL)
-				lua_pushboolean(L, lua_rawequal(L, 2, 3));
-			else
-				lua_pushboolean(L, false); // Object has no '__index' metafield so we can't check
+			// Check if it has a special metafield with the type name
+			if (luaL_getmetafield(L, 1, "__name") != LUA_TNIL)
+				return 1;
+			lua_pushstring(L, luaL_typename(L, 1));
 			return 1;
 		});
-		lua_setglobal(L, "instanceof");
+		lua_setglobal(L, "type");
 	}
 
 }

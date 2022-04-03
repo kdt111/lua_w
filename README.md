@@ -13,7 +13,7 @@ A `C++17`, header-only library implemented mostly as different templates that ai
 ### Library
 - Simple opening of specified `Lua` libraries
 - Stack operation made as type safe as possible
-- Registering `C++` functions of an arbitrary signature to be used in `Lua` (even when those functions expect parameters passed by reference)
+- Registering `C++` functions of an arbitrary signature to be used in `Lua` (with some limitations)
 - Calling `Lua` functions from `C++`
 - Storing `Lua` functions as `C++` objects and calling them form this object
 - Setting and getting global values from `Lua`
@@ -28,7 +28,7 @@ A `C++17`, header-only library implemented mostly as different templates that ai
 	- Ability to automaticly detect and bind some custom operators to `Lua` (+, -, *, /, unary -, ==, <, <=)
 	- Ability to define custom behaviour for `Lua`'s metamethods (eg. define more operators than the detected ones)
 	- `Lua`'s garbage collector repects calls to destructors
-	- a custom `instanceof` function that allows to check in `Lua` if a varaible is some specific bound type
+	- a custom `type` function that can also check for the registered types (for everything else will work the same as the regular type function)
 	- Inheritance support (limited to one parent type) with full support of virtual methods
 - Type safe retrieval of pointers from `Lua` using RTTI (you can opt-out of this feature)
 
@@ -52,13 +52,13 @@ Opting out of this feature will make all pointer retrievals form `Lua` unsafe (t
 - The library doesn't use any platform specific headers, however due to time constraints I was only able to test it on Windows using MinGW (GCC 11.2.0)
 
 ## Limitations
-- By default this library doesn't handle `std::string`. I tried multiple times to make an interface for them, but no idea came to mind
+- The library doesn't support references AT ALL. This is by design since `Lua` doesn't support 
+- By default this library doesn't handle retrieval of `std::string` from `Lua`, but you can pass them to `Lua`
 - Registering multiple overload of the same function is not supported. You have to register them under different names. 
 - The libary by default only supports at most two constructors, if you want more you can register static methods that implement those constructors.
 - Operators will only be automaticly detected when both of their arguments are of the same type as the bound class. If you want to overload operatos then you will have to implement them manually as metamethods
 - If you want to use `add_parent_type<TParentClass>()` register `TParentClass` first (If you won't then calling methods form the base type will not work). For simplicity only one base type is allowed (so no multiple inheritance)
 - Pointer safety uses RTTI (for `dynamic_cast`) this only happens when retrieving pointers form `Lua`. This check can't really be implemented in `Lua` as it has no knowlege of the `C++` type system and even if it could be done `dynamic_cast` will probably be faster
-- Due to the fact that they can't be represented as pointer rvalue references are NOT supported at all
 
 ## Examples
 ### Globals
@@ -80,8 +80,12 @@ int main()
 		print(cpp_global)
 	)");
 
-	std::cout << lua_w::get_global<const char*>(L, "lua_global").value_or("NO GLOBAL FOUND") << '\n';
-	std::cout << lua_w::get_global<float>(L, "lua_numeric_global").value_or(-1000.0) << '\n';
+	std::cout << lua_w::get_global<const char*>(L, "lua_global") << '\n';
+	std::cout << lua_w::get_global<float>(L, "lua_numeric_global") << '\n';
+	if (lua_w::has_global<double>(L, "x"))
+		std::cout << lua_w::get_global<double>(L, "x") << '\n';
+	else
+		std::cout << "No global 'x'\n";
 
 	lua_close(L);
 }
@@ -97,7 +101,7 @@ int main()
 {
 	lua_State* L = luaL_newstate();
 	lua_w::open_libs(L, lua_w::Libs::base);
-	
+
 	lua_w::Table cTable(L);
 	cTable.set(1, 12.7);
 	cTable.set(2, "Some string");
@@ -118,24 +122,24 @@ int main()
 
 	std::cout << "---PRINTING IN C++---\n";
 
-	auto luaTab = lua_w::get_global<lua_w::Table>(L, "lua_tab").value();
+	auto luaTab = lua_w::get_global<lua_w::Table>(L, "lua_tab");
 	std::cout << "lua_tab length = " << luaTab.length() << '\n';
-	std::cout << "lua_tab[1] = " << luaTab.get<int, double>(1).value() << '\n';
-	std::cout << "lua_tab[2] = " << luaTab.get<int, const char*>(2).value() << '\n';
-	std::cout << "lua_tab[\"Key\"] = " << luaTab.get<const char*, const char*>("Key").value() << '\n';
+	std::cout << "lua_tab[1] = " << luaTab.get<int, double>(1) << '\n';
+	std::cout << "lua_tab[2] = " << luaTab.get<int, const char*>(2) << '\n';
+	std::cout << "lua_tab[\"Key\"] = " << luaTab.get<const char*, const char*>("Key")<< '\n';
 
-	auto dict = lua_w::get_global<lua_w::Table>(L, "dict").value();
+	auto dict = lua_w::get_global<lua_w::Table>(L, "dict");
 	dict.for_each<const char*, const char*>([](const char* key, const char* value)
 	{
 		std::cout << "dict[\"" << key << "\"] = " << value << '\n';
 	});
 
-	auto array = lua_w::get_global<lua_w::Table>(L, "array").value();
+	auto array = lua_w::get_global<lua_w::Table>(L, "array");
 	double valueToFind = 17;
 	array.for_each<int, double>([&valueToFind](int key, double value)
 	{
 		std::cout << "array[" << key << "] = " << value;
-		if(value == valueToFind)
+		if (value == valueToFind)
 			std::cout << " (FOUND VALUE!)\n";
 		else
 			std::cout << '\n';
@@ -197,13 +201,15 @@ int main()
 		end
 	)script");
 
-	std::cout << lua_w::call_lua_function<const char*>(L, "lua_func", 3.0, 50.0, 22.7).value() << '\n';
-	lua_w::call_lua_function_void(L, "echo", "Argument passed form C++");
+	std::cout << lua_w::call_lua_function<const char*>(L, "lua_func", 3.0, 50.0, 22.7) << '\n';
+	
+	auto function = lua_w::get_global<lua_w::Function>(L, "echo");
+	function("Some text form C++");
 
-	auto returnedFunction = lua_w::call_lua_function<lua_w::Function>(L, "returns_a_function").value();
-	std::cout << "Should return 10 = " << returnedFunction.call<int>(3).value() << '\n'; // (x = 7) x + 3 = 10
-	std::cout << "Should return 15 = " << returnedFunction.call<int>(5).value() << '\n'; // (x = 10) x + 5 = 15
-	std::cout << "Should return 8 = " << returnedFunction.call<int>(-7).value() << '\n'; // (x = 15) x + (-7) = 8
+	auto returnedFunction = lua_w::call_lua_function<lua_w::Function>(L, "returns_a_function");
+	std::cout << "Should return 10 = " << returnedFunction.call<int>(3) << '\n'; // (x = 7) x + 3 = 10
+	std::cout << "Should return 15 = " << returnedFunction.call<int>(5) << '\n'; // (x = 10) x + 5 = 15
+	std::cout << "Should return 8 = " << returnedFunction.call<int>(-7) << '\n'; // (x = 15) x + (-7) = 8
 
 	lua_close(L);
 }
@@ -257,7 +263,7 @@ int main()
 	lua_State* L = luaL_newstate();
 	lua_w::open_libs(L, lua_w::Libs::base);
 
-	lua_w::register_instanceof_function(L);
+	lua_w::register_type_function(L);
 
 	lua_w::register_type<Object>(L)
 	.add_method("get_address", &Object::get_address)
@@ -277,49 +283,44 @@ int main()
 			return 0;
 		Vec2* lhs = (Vec2*)lua_touserdata(L, 1);
 		lua_Number rhs = lua_tonumber(L, 2);
-		lua_w::stack_push<Vec2>(L, *lhs * rhs);
+		lua_w::internal::stack_push<Vec2>(L, *lhs * rhs);
 		return 1;
 	})
-	// Custom overload of the len operator (to get the magnitude of the vector)
-	.add_metamethod("__len", [](lua_State* L) -> int
+	// Custom overload of the __tostring method (for better printing)
+	.add_metamethod("__tostring", [](lua_State* L) -> int
 	{
-		Vec2* vec = (Vec2*)lua_touserdata(L, 1);
-		lua_pushnumber(L, vec->magnitude());
+		Vec2* self = (Vec2*)lua_touserdata(L, 1);
+		lua_pushfstring(L, "(%f, %f)", self->get_x(), self->get_y());
 		return 1;
 	})
 	.add_static_method("one", &Vec2::one)
 	.add_custom_and_default_constructors<double, double>();
-	
+
 	luaL_dostring(L, R"script(
-	function format_vec2(vec)
-		if instanceof(vec, Vec2) then
-			return "("..vec:get_x()..", "..vec:get_y()..")"
-		else
-			return "NOT A VEC2"
-		end
-	end
-	local v1 = Vec2(3, 4)
-	local v2 = Vec2(7, 5)
-	local num = 77.5
+		local v1 = Vec2(3, 4)
+		local v2 = Vec2(7, 5)
+		local num = 77.5
 
-	print("num = "..format_vec2(num))
-	print("default vector = "..format_vec2(Vec2()))
-	print("Vec2.one() = "..format_vec2(Vec2.one()))
-	print("v1 = "..format_vec2(v1))
-	print("v2 = "..format_vec2(v2))
+		print("type(num) = "..type(num))
+		print("type(v1) = "..type(v1))
+		print("type(nil) = "..type(nil))
 
-	print("[Inherited method] Address = "..v1:get_address())
-	print("Virtual print:")
-	v1:print()
-	
-	print("v1 + v2 = "..format_vec2(v1 + v2))
-	print("v1 - v2 = "..format_vec2(v1 - v2))
-	print("v1 * 2 = "..format_vec2(v1 * 2))
-	print("-v1 = "..format_vec2(-v1))
-	
-	print("v1 == v2 is "..tostring(v1 == v2))
-	print("v1 == Vec2(3, 4) is "..tostring(v1 == Vec2(3, 4)))
-	print("v1.magnitude() = "..#v1)
+		print("default vector = "..tostring(Vec2()))
+		print("Vec2.one() = "..tostring(Vec2.one()))
+		print("v1 = "..tostring(v1))
+		print("v2 = "..tostring(v2))
+
+		print("[Inherited method] Address = "..v1:get_address())
+		print("Virtual print:")
+		v1:print()
+
+		print("v1 + v2 = "..tostring(v1 + v2))
+		print("v1 - v2 = "..tostring(v1 - v2))
+		print("v1 * 2 = "..tostring(v1 * 2))
+		print("-v1 = "..tostring(-v1))
+
+		print("v1 == v2 is "..tostring(v1 == v2))
+		print("v1 == Vec2(3, 4) is "..tostring(v1 == Vec2(3, 4)))
 	)script");
 
 	lua_close(L);
@@ -361,90 +362,40 @@ int main()
 	)script");
 
 	std::cout << "ntr as 'NotRegisteredType': ";
-	if (lua_w::get_global<NotRegisteredType*>(L, "ntr"))
+	if (lua_w::has_global<NotRegisteredType*>(L, "ntr"))
 		std::cout << "VALID\n";
 	else
 		std::cout << "INVALID\n";
 
 	std::cout << "ntr as 'Type1': ";
-	if (lua_w::get_global<Type1*>(L, "ntr"))
+	if (lua_w::has_global<Type1*>(L, "ntr"))
 		std::cout << "VALID\n";
 	else
 		std::cout << "INVALID\n";
 
 	std::cout << "t1 as 'Type1': ";
-	if (lua_w::get_global<Type1*>(L, "t1"))
+	if (lua_w::has_global<Type1*>(L, "t1"))
 		std::cout << "VALID\n";
 	else
 		std::cout << "INVALID\n";
 
 	std::cout << "t1 as 'Type2': ";
-	if (lua_w::get_global<Type2*>(L, "t1"))
+	if (lua_w::has_global<Type2*>(L, "t1"))
 		std::cout << "VALID\n";
 	else
 		std::cout << "INVALID\n";
 
 	std::cout << "t2 as 'Type2': ";
-	if (lua_w::get_global<Type2*>(L, "t2"))
+	if (lua_w::has_global<Type2*>(L, "t2"))
 		std::cout << "VALID\n";
 	else
 		std::cout << "INVALID\n";
 
 	std::cout << "t2 as 'Type1': ";
-	if (lua_w::get_global<Type1*>(L, "t2"))
+	if (lua_w::has_global<Type1*>(L, "t2"))
 		std::cout << "VALID\n";
 	else
 		std::cout << "INVALID\n";
-
-	lua_close(L);
-}
-```
-
-### Using references
-```c++
-#include <iostream>
-#define LUA_W_NO_PTR_SAFETY
-#include "lua_w.h"
-
-struct Object { int i; };
-
-Object toModify;
-
-void modify_object(Object& obj, int newI)
-{
-	obj.i = newI;
-}
-
-Object& get_object()
-{
-	return toModify;
-}
-
-int get_i(const Object& obj)
-{
-	return obj.i;
-}
-
-int main()
-{
-	lua_State* L = luaL_newstate();
-	lua_w::open_libs(L, lua_w::Libs::base);
-
-	lua_w::register_function(L, "get_object", &get_object);
-	lua_w::register_function(L, "modify_object", &modify_object);
-	lua_w::register_function(L, "get_i", &get_i);
-
-	std::cout << "In C++ i = " << toModify.i << " (Should be 0)\n";
-
-	if(luaL_dostring(L, R"script(
-		local obj = get_object()
-		print("In Lua i = "..get_i(obj).." (Should be 0)")
-		modify_object(obj, 1000)
-		print("In Lua (after modifications) i = "..get_i(obj).." (Should be 1000)")
-	)script"))
-		std::cout << "Error: " << lua_tostring(L, -1) << '\n';
-
-	std::cout << "In C++ (after modifications) i = " << toModify.i << " (Should be 1000)\n";
 
 	lua_close(L);
 }
