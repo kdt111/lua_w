@@ -1,5 +1,5 @@
 # lua_w
-A `C++17`, header-only library implemented mostly as different templates that aims to make integrating native `C++` objects to `Lua` as simple as possible
+A `C++17`, header-only library that aims to make binding `C++` to `Lua` as simple as possible
 
 ## Features
 ### General
@@ -39,26 +39,23 @@ A `C++17`, header-only library implemented mostly as different templates that ai
 - A compiler and a standard library that both support `C++17` are required, as some `C++17` features are used (`if constexpr`, some newer stuff form `type_traits` and some others)
 - The only tested `Lua` version is `5.4`
 - The header file should be placed in a directory from which 
-```c++
-#include <lua.hpp>
-```
-is accesible
+`#include <lua.hpp>` is accesible
 - If you don't want to use safe pointer retrieval then define `LUA_W_NO_PTR_SAFETY` before including `lua_w.h` like so:
 ``` c++
 #define LUA_W_NO_PTR_SAFETY
 #include "lua_w.h"
 ```
-Opting out of this feature will make all pointer retrievals form `Lua` unsafe (the pointer may not point to the requested data type). When this safety is NOT disabled the every type that inherits form `lua_w::LuaBaseObject` can be safely retrieved with a guarranty that it points to the specified type (or can the data can be converted to the specified type)
+Opting out of this feature will make all pointer retrievals form `Lua` unsafe (the pointer may not point to the requested data type). When this safety is NOT disabled the every type that inherits form `lua_w::LuaBaseObject` can be safely retrieved with a guarranty that it points to the specified type (or that the data can be converted to the specified type)
 - The library doesn't use any platform specific headers, however due to time constraints I was only able to test it on Windows using MinGW (GCC 11.2.0)
 
 ## Limitations
-- The library doesn't support references AT ALL. This is by design since `Lua` doesn't support 
+- The library doesn't support references AT ALL. This is by design since `Lua` doesn't support (or understand) them
 - By default this library doesn't handle retrieval of `std::string` from `Lua`, but you can pass them to `Lua`
 - Registering multiple overload of the same function is not supported. You have to register them under different names. 
 - The libary by default only supports at most two constructors, if you want more you can register static methods that implement those constructors.
 - Operators will only be automaticly detected when both of their arguments are of the same type as the bound class. If you want to overload operatos then you will have to implement them manually as metamethods
-- If you want to use `add_parent_type<TParentClass>()` register `TParentClass` first (If you won't then calling methods form the base type will not work). For simplicity only one base type is allowed (so no multiple inheritance)
-- Pointer safety uses RTTI (for `dynamic_cast`) this only happens when retrieving pointers form `Lua`. This check can't really be implemented in `Lua` as it has no knowlege of the `C++` type system and even if it could be done `dynamic_cast` will probably be faster
+- If you want to use `add_parent_type<TParentClass>()` when registering a type, register `TParentClass` first (If you won't then calling methods form the base type will not work). For simplicity only one base type is allowed (so no multiple inheritance)
+- Pointer safety uses RTTI (for `dynamic_cast`) this only happens when retrieving pointers form `Lua`. This check can't really be implemented in `Lua` as it has no knowlege of the `C++` type system and even if it could be done `dynamic_cast` would probably be faster
 
 ## Examples
 ### Globals
@@ -203,6 +200,7 @@ int main()
 
 	std::cout << lua_w::call_lua_function<const char*>(L, "lua_func", 3.0, 50.0, 22.7) << '\n';
 	
+	// Global functions can also be used like that
 	auto function = lua_w::get_global<lua_w::Function>(L, "echo");
 	function("Some text form C++");
 
@@ -400,3 +398,25 @@ int main()
 	lua_close(L);
 }
 ```
+## Licence
+MIT License
+
+Copyright (c) 2022 Jan Malek (https://github.com/kdt111)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

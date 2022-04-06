@@ -1,3 +1,27 @@
+/*
+MIT License
+
+Copyright (c) 2022 Jan Malek (https://github.com/kdt111)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+
 #pragma once
 
 // Classic include guard if the compiler doesn't support #pragma once
@@ -426,7 +450,7 @@ namespace lua_w
 		}
 	}
 
-	// Calls a Lua function with the arguments and an expected return type
+	// Calls a GLOBAL Lua function with the arguments and an expected return type
 	template<typename TRet, typename... TArgs>
 	TRet call_lua_function(lua_State* L, const char* funcName, TArgs... funcArgs)
 	{
@@ -442,14 +466,13 @@ namespace lua_w
 	template<typename TRet, typename... TArgs>
 	void wrap_function(lua_State* L, internal::FuncPtr_t<TRet, TArgs...> funcPtr) noexcept
 	{
-		// Push the pointer to the function as light use data (so a pointer to anything) 
+		// Push the pointer to the function as a upvalue (so it can be retrieved in the registerd_function)
 		lua_pushlightuserdata(L, (void*)funcPtr); // C style cast has to be made to avoid compilation errors
 		// Register the function as a C closure (explanation - https://www.lua.org/pil/27.3.3.html)
-		// And will know what C function to call
 		lua_pushcclosure(L, &internal::registered_function<TRet, TArgs...>, 1);
 	}
 
-	// Registers a C function of arbitrary signature into the lua VM.
+	// Registers a C function of arbitrary signature as a global Lua function
 	// The function will be called as normal if all arguments are present and have required types
 	template<typename TRet, typename... TArgs>
 	void register_function(lua_State* L, const char* funcName, internal::FuncPtr_t<TRet, TArgs...> funcPtr) noexcept
@@ -615,6 +638,7 @@ namespace lua_w
 				lua_pop(L, 3); // Pop the metatable,  the type table and it's metatable
 			}
 		
+			// Pushes the metatable on the stack (will create one if it doesn't exist) 
 			void get_type_table_metatable() const noexcept
 			{
 				if(lua_getmetatable(L, -1)) // Object has a metatable and it is on the stack now
@@ -856,7 +880,7 @@ namespace lua_w
 				return *this;
 			}
 
-			// Adds a custom definition for one of lua's metamethods
+			// Adds a custom definition for one of lua's metamethods. Has to use the lua_CFunction signature -> int(*)(lua_State*)
 			const TypeWrapper& add_metamethod(const char* methodName, lua_CFunction func) const noexcept
 			{
 				luaL_getmetatable(L, TClass::lua_type_name());
@@ -956,7 +980,7 @@ namespace lua_w
 			// Check if it has a special metafield with the type name
 			if (luaL_getmetafield(L, 1, "__name") != LUA_TNIL)
 				return 1;
-			lua_pushstring(L, luaL_typename(L, 1));
+			lua_pushstring(L, luaL_typename(L, 1)); // No need to clean up nil, since stack will be cleaned up when the function returns
 			return 1;
 		});
 		lua_setglobal(L, "type");
