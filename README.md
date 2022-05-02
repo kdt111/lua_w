@@ -24,6 +24,7 @@ A `C++17`, header-only library that aims to make binding `C++` to `Lua` as simpl
 	- A `for_each` method that allows traversall of tables that have a constant key type and a constant value type
 - Binding custom classes to `Lua` and that includes:
 	- Ability to call arbitrary methods (both const and non-const)
+    - Ability to both get and set bound member variables
 	- Ability to bind a constructor (one custom constructor or default constructor or both) so new instances of the class can be created in `Lua`
 	- Ability to automaticly detect and bind some custom operators to `Lua` (+, -, *, /, unary -, ==, <, <=)
 	- Ability to define custom behaviour for `Lua`'s metamethods (eg. define more operators than the detected ones)
@@ -35,9 +36,14 @@ A `C++17`, header-only library that aims to make binding `C++` to `Lua` as simpl
 ... And all of this (and maybe something more in the future) in just about 1000 lines of code
 
 ## Usage
-- To use the libray simply include the header `lua_w.h` to your files (aside from `Lua` the only used dependencies are the standard library) 
+- To use the libray simply include the header `lua_w.h` to your files (aside from `Lua` the only used dependencies are the standard library)
+- In a SINGLE .cpp file use the following construction, to generate definitions of non-templated structures
+```c++
+#define LUA_W_IMPLEMENTATION
+#include "lua_w.h"
+```
 - A compiler and a standard library that both support `C++17` are required, as some `C++17` features are used (`if constexpr`, some newer stuff form `type_traits` and some others)
-- The only tested `Lua` version is `5.4`
+- The library was written with `Lua 5.4` in mind so different versions may not work
 - The header file should be placed in a directory from which 
 `#include <lua.hpp>` is accesible
 - If you don't want to use safe pointer retrieval then define `LUA_W_NO_PTR_SAFETY` before including `lua_w.h` like so:
@@ -62,29 +68,34 @@ Opting out of this feature will make all pointer retrievals form `Lua` unsafe (t
 ```c++
 #include <iostream>
 #define LUA_W_NO_PTR_SAFETY
+#define LUA_W_IMPLEMENTATION
 #include "lua_w.h"
 
 int main()
 {
-	lua_State* L = luaL_newstate();
-	lua_w::open_libs(L, lua_w::Libs::base | lua_w::Libs::math);
+    lua_State* L = luaL_newstate();
+    lua_w::open_libs(L, lua_w::Libs::base | lua_w::Libs::math);
 
-	lua_w::set_global(L, "cpp_global", "Global from C++");
+    lua_w::set_global(L, "cpp_global", "Global from C++");
 
-	luaL_dostring(L, R"(
+    luaL_dostring(L, R"(
 		lua_global = 'Global from lua'
 		lua_numeric_global = math.sin(math.pi * 2) -- Should be about 0
 		print(cpp_global)
+        if math.random(10) > 5 then
+            x = 22
+            print("'x' registered")
+        end
 	)");
 
-	std::cout << lua_w::get_global<const char*>(L, "lua_global") << '\n';
-	std::cout << lua_w::get_global<float>(L, "lua_numeric_global") << '\n';
-	if (lua_w::has_global<double>(L, "x"))
-		std::cout << lua_w::get_global<double>(L, "x") << '\n';
-	else
-		std::cout << "No global 'x'\n";
+    std::cout << lua_w::get_global<const char*>(L, "lua_global") << '\n';
+    std::cout << lua_w::get_global<float>(L, "lua_numeric_global") << '\n';
+    if (lua_w::has_global<double>(L, "x"))
+        std::cout << "x = " << lua_w::get_global<double>(L, "x") << '\n';
+    else
+        std::cout << "No global 'x'\n";
 
-	lua_close(L);
+    lua_close(L);
 }
 ```
 
@@ -92,6 +103,7 @@ int main()
 ```c++
 #include <iostream>
 #define LUA_W_NO_PTR_SAFETY
+#define LUA_W_IMPLEMENTATION
 #include "lua_w.h"
 
 int main()
@@ -149,23 +161,31 @@ int main()
 ### Binding functions
 ```c++
 #include <iostream>
+#define LUA_W_NO_PTR_SAFETY
+#define LUA_W_IMPLEMENTATION
 #include "lua_w.h"
 
 void test_func(const char* name, double i, double j)
 {
-	std::cout << name << " = " << (i + j) << '\n';
+    std::cout << name << " = " << (i + j) << '\n';
 }
 
 int main()
 {
-	lua_State* L = luaL_newstate();
+    lua_State* L = luaL_newstate();
 
-	lua_w::register_function(L, "test_func", &test_func);
-	luaL_dostring(L, R"script(
+    lua_w::register_function(L, "test_func", &test_func);
+    luaL_dostring(L, R"script(
 		test_func("testVariable", 3, 7)
 	)script");
 
-	lua_close(L);
+    // This will error out (third argument is of a invalid type)
+    if (luaL_dostring(L, R"script(
+		test_func("testVariable", 3, "string")
+	)script"))
+        std::cout << "Error: " << lua_tostring(L, -1) << '\n';
+
+    lua_close(L);
 }
 ```
 
@@ -173,6 +193,7 @@ int main()
 ```c++
 #include <iostream>
 #define LUA_W_NO_PTR_SAFETY
+#define LUA_W_IMPLEMENTATION
 #include "lua_w.h"
 
 int main()
@@ -204,6 +225,7 @@ int main()
 	auto function = lua_w::get_global<lua_w::Function>(L, "echo");
 	function("Some text form C++");
 
+    // Closures, and returning functions are also supported
 	auto returnedFunction = lua_w::call_lua_function<lua_w::Function>(L, "returns_a_function");
 	std::cout << "Should return 10 = " << returnedFunction.call<int>(3) << '\n'; // (x = 7) x + 3 = 10
 	std::cout << "Should return 15 = " << returnedFunction.call<int>(5) << '\n'; // (x = 10) x + 5 = 15
@@ -218,117 +240,121 @@ int main()
 #include <cmath>
 #include <iostream>
 #define LUA_W_NO_PTR_SAFETY
+#define LUA_W_IMPLEMENTATION
 #include "lua_w.h"
 
 class Object
 {
 public:
-	constexpr static const char* lua_type_name() { return "Object"; }
-	unsigned long long get_address() const { return (unsigned long long)this; }
-	virtual void print() const { std::cout << '[' << this << "]\n"; }
+    constexpr static const char* lua_type_name() { return "Object"; }
+    unsigned long long get_address() const { return (unsigned long long)this; }
+    virtual void print() const { std::cout << '[' << this << "]\n"; }
 };
 
 class Vec2 : public Object
 {
-private:
-	double x, y;
 public:
-	Vec2() : x(0), y(0) {}
-	Vec2(double x, double y) : x(x), y(y) {}
+    double x, y;
+    Vec2() : x(0), y(0) {}
+    Vec2(double x, double y) : x(x), y(y) {}
 
-	double get_x() const { return x; }
-	double get_y() const { return y; }
-	void set_x(double newX) { x = newX; }
-	void set_y(double newY) { y = newY; }
+    double magnitude() const { return sqrt(x * x + y * y); }
 
-	double magnitude() const { return sqrt(x * x + y * y); }
+    friend Vec2 operator+(const Vec2& lhs, const Vec2& rhs) { return Vec2(lhs.x + rhs.x, lhs.y + rhs.y); }
+    friend Vec2 operator-(const Vec2& lhs, const Vec2& rhs) { return Vec2(lhs.x - rhs.x, lhs.y - rhs.y); }
+    friend Vec2 operator*(const Vec2& lhs, double rhs) { return Vec2(lhs.x * rhs, lhs.y * rhs); }
+    friend Vec2 operator-(const Vec2& vec) { return Vec2(-vec.x, -vec.y); }
+    friend bool operator==(const Vec2& lhs, const Vec2& rhs) { return lhs.x == rhs.x && lhs.y == rhs.y; }
 
-	friend Vec2 operator+(const Vec2& lhs, const Vec2& rhs) { return Vec2(lhs.x + rhs.x, lhs.y + rhs.y); }
-	friend Vec2 operator-(const Vec2& lhs, const Vec2& rhs) { return Vec2(lhs.x - rhs.x, lhs.y - rhs.y); }
-	friend Vec2 operator*(const Vec2& lhs, double rhs) { return Vec2(lhs.x * rhs, lhs.y * rhs); }
-	friend Vec2 operator-(const Vec2& vec) { return Vec2(-vec.x, -vec.y); }
-	friend bool operator==(const Vec2& lhs, const Vec2& rhs) { return lhs.x == rhs.x && lhs.y == rhs.y; }
+    constexpr static const char* lua_type_name() { return "Vec2"; }
 
-	constexpr static const char* lua_type_name() { return "Vec2"; }
+    static Vec2 one() { return Vec2(1.0, 1.0); }
 
-	static Vec2 one() { return Vec2(1.0, 1.0); }
-
-	void print() const override { std::cout << '(' << x << ", " << y << ")\n"; }
+    void print() const override { std::cout << '(' << x << ", " << y << ")\n"; }
 };
 
 int main()
 {
-	lua_State* L = luaL_newstate();
-	lua_w::open_libs(L, lua_w::Libs::base);
+    lua_State* L = luaL_newstate();
+    lua_w::open_libs(L, lua_w::Libs::base);
 
-	lua_w::register_type_function(L);
+    lua_w::register_type_function(L);
 
-	lua_w::register_type<Object>(L)
-	.add_method("get_address", &Object::get_address)
-	.add_method("print", &Object::print);
+    lua_w::register_type<Object>(L)
+        .add_method("get_address", &Object::get_address)
+        .add_method("print", &Object::print);
 
-	lua_w::register_type<Vec2>(L)
-	.add_parent_type<Object>()
-	.add_detected_operators()
-	.add_method("get_x", &Vec2::get_x)
-	.add_method("get_y", &Vec2::get_y)
-	.add_method("set_x", &Vec2::set_x)
-	.add_method("set_y", &Vec2::set_y)
-	// Custom overload of the multiplication operator (to multiply vectors by numbers)
-	.add_metamethod("__mul", [](lua_State* L) -> int
-	{
-		if (!lua_isuserdata(L, 1) || !lua_isnumber(L, 2))
-			return 0;
-		Vec2* lhs = (Vec2*)lua_touserdata(L, 1);
-		lua_Number rhs = lua_tonumber(L, 2);
-		lua_w::internal::stack_push<Vec2>(L, *lhs * rhs);
-		return 1;
-	})
-	// Custom overload of the __tostring method (for better printing)
-	.add_metamethod("__tostring", [](lua_State* L) -> int
-	{
-		Vec2* self = (Vec2*)lua_touserdata(L, 1);
-		lua_pushfstring(L, "(%f, %f)", self->get_x(), self->get_y());
-		return 1;
-	})
-	.add_static_method("one", &Vec2::one)
-	.add_custom_and_default_constructors<double, double>();
+    lua_w::register_type<Vec2>(L)
+        .add_parent_type<Object>()
+        .add_detected_operators()
+        .add_member("x", &Vec2::x)
+        .add_member("y", &Vec2::y)
+        .add_method("magnitude", &Vec2::magnitude)
+        // Custom overload of the multiplication operator (to multiply vectors by numbers)
+        .add_metamethod("__mul", [](lua_State* L) -> int
+        {
+            if (!lua_isuserdata(L, 1) || !lua_isnumber(L, 2))
+                return 0;
+            Vec2* lhs = (Vec2*)lua_touserdata(L, 1);
+            lua_Number rhs = lua_tonumber(L, 2);
+            lua_w::internal::stack_push<Vec2>(L, *lhs * rhs);
+            return 1;
+        })
+        // Custom overload of the __tostring method (for better printing)
+        .add_metamethod("__tostring", [](lua_State* L) -> int
+        {
+            Vec2* self = (Vec2*)lua_touserdata(L, 1);
+            lua_pushfstring(L, "(%f, %f)", self->x, self->y);
+            return 1;
+        })
+        .add_static_method("one", &Vec2::one)
+        .add_custom_and_default_constructors<double, double>();
 
-	luaL_dostring(L, R"script(
+    luaL_dostring(L, R"script(
 		local v1 = Vec2(3, 4)
 		local v2 = Vec2(7, 5)
 		local num = 77.5
-
+        
+        print("Types:")
 		print("type(num) = "..type(num))
 		print("type(v1) = "..type(v1))
 		print("type(nil) = "..type(nil))
 
+        print("\nConstructors:")
 		print("default vector = "..tostring(Vec2()))
 		print("Vec2.one() = "..tostring(Vec2.one()))
-		print("v1 = "..tostring(v1))
-		print("v2 = "..tostring(v2))
 
+        print("\nMember variables and methods:")
+        print("v1:magnitude() = "..v1:magnitude())
+        print("v1.x = "..v1:x())
+        v1:x(10)
+        print("v1.x = "..v1:x())
+
+        print("\nInheritance and virtual methods:")
 		print("[Inherited method] Address = "..v1:get_address())
 		print("Virtual print:")
 		v1:print()
 
+        print("\nOperator overloading:")
+        print("v1 = "..tostring(v1))
+		print("v2 = "..tostring(v2))
 		print("v1 + v2 = "..tostring(v1 + v2))
 		print("v1 - v2 = "..tostring(v1 - v2))
 		print("v1 * 2 = "..tostring(v1 * 2))
 		print("-v1 = "..tostring(-v1))
 
 		print("v1 == v2 is "..tostring(v1 == v2))
-		print("v1 == Vec2(3, 4) is "..tostring(v1 == Vec2(3, 4)))
+		print("v1 == Vec2(10, 4) is "..tostring(v1 == Vec2(10, 4)))
 	)script");
 
-	lua_close(L);
+    lua_close(L);
 }
 ```
 
 ### Pointer safety
 ```c++
 #include <iostream>
-
+#define LUA_W_IMPLEMENTATION
 #include "lua_w.h"
 
 struct Type1 : lua_w::LuaBaseObject
