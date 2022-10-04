@@ -1,6 +1,5 @@
 /.vscode
 /build
 /external
-/CMakeLists.txt
 /main.cpp
 /script.lua
