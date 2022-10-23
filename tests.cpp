@@ -105,10 +105,44 @@ void should_throw_errors() {
     TEARDOWN
 }
 
+void should_handle_tables() {
+    SETUP
+
+    assert(luaL_dostring(L, R"(
+        array = {1, 2, 3, 4, 5}
+        dict = { one = 1, two = 2, three = 3, other = "A string" }
+    )") == LUA_OK);
+
+    auto array = lua_w::get_global<lua_w::Table>(L, "array");
+    for (int i = 1; i <= 5; i++ )
+        assert(array.get<int>(i) == i);
+    
+    int threshold = 2;
+    array.for_each<int, int>([&threshold](int key, int value) {
+        if (key > threshold) {
+            assert(key == value);
+        }
+    });
+
+    auto dict = lua_w::get_global<lua_w::Table>(L, "dict");
+    assert(dict.get<int>("one") == 1);
+    assert(std::strcmp(dict.get<const char*>("other"), "A string") == 0);
+    dict.set("four", 4);
+    dict.set(70, "A string value");
+
+    assert(luaL_dostring(L, R"(
+        assert(dict.four == 4)
+        assert(dict[70] == "A string value")
+    )") == LUA_OK);
+
+    TEARDOWN
+}
+
 int main() {
     should_handle_globals();
     should_handle_functions();
     should_handle_function_objects();
     should_throw_errors();
+    should_handle_tables();
     std::cout << "Tests passed!\n";
 }
