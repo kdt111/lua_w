@@ -8,10 +8,13 @@
 #include "lua_w.h"
 
 #define SETUP lua_State* L = luaL_newstate();         \
+              lua_w::init(L);                         \
               lua_w::open_libs(L, lua_w::Libs::all);  \
               lua_w::register_type_function(L);       \
+              {                                       \
 
-#define TEARDOWN lua_close(L);
+#define TEARDOWN }              \
+                 lua_close(L);  \
 
 void should_handle_globals() {
     SETUP
@@ -53,8 +56,38 @@ void should_handle_functions() {
     TEARDOWN
 }
 
+void should_handle_function_objects() {
+    SETUP
+
+    assert(luaL_dostring(L, R"(
+    function func(a, b, c)
+        return "Res = "..(a + b + c)
+    end
+
+    function closure(num)
+        local num = 7
+        return (function()
+            num = num + 1
+            return num
+        end) 
+    end
+    )") == LUA_OK);
+
+    auto func = lua_w::get_global<lua_w::Function>(L, "func");
+    assert(strcmp(func.call<const char*>(1, 2, 3), "Res = 6.0") == 0);
+
+    auto closure = lua_w::get_global<lua_w::Function>(L, "closure");
+    auto inner = closure.call<lua_w::Function>();
+    assert(inner.call<int>() == 8);
+    assert(inner.call<int>() == 9);
+    assert(inner.call<int>() == 10);
+
+    TEARDOWN
+}
+
 int main() {
     should_handle_globals();
     should_handle_functions();
+    should_handle_function_objects();
     std::cout << "Tests passed!\n";
 }
