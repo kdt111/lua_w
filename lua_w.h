@@ -205,7 +205,7 @@ namespace lua_w
 
         // Returns a value that was keyed by the passed in key
         // TKey, and TValue can be anything that can be pushed and pulled from the stack
-        template<typename TKey, typename TValue>
+        template<typename TValue, typename TKey>
         TValue get(const TKey& key) const
         {
             using key_t = std::decay_t<TKey>;
