@@ -56,6 +56,14 @@ namespace lua_w
         
         template<class T>
         constexpr bool has_lua_type_name_v<T, std::void_t<decltype(T::lua_type_name())>> = std::is_same_v<decltype(T::lua_type_name()), const char*>;
+    
+        class Error : public std::runtime_error
+        {
+            const char* typeName;
+        public:
+            Error(const char* type, const char* message);
+            const char* type() const;
+        };
     }
 
     //----------------------------
@@ -110,7 +118,7 @@ namespace lua_w
                     lua_pop(L, 1);
                 }
                 else
-                    throw std::runtime_error("lua_w was not initialized");
+                    throw lua_w::internal::Error(nullptr, "lua_w was not initialized");
             }
             ~LuaObjectReference()
             {
@@ -271,9 +279,9 @@ namespace lua_w
                 }
                 lua_pop(L, 1);
             }
-            catch(const std::exception& e)
+            catch (const lua_w::internal::Error& e)
             {
-                luaL_error(L, "While iterating over a table, key or value couldn't be retrieved or were of a wrong type");
+                luaL_error(L, "While iterating over a table, key or value couldn't be retrieved or were of a wrong type (%s)", e.what());
             }
         }
     };
@@ -376,17 +384,17 @@ namespace lua_w
             static_assert(!std::is_reference_v<TValue>, "Using references is not supported, use pointers instead");
             using value_t = std::decay_t<TValue>; // Remove references, const and volatile kewyords to better match the types
             if constexpr (std::is_same_v<value_t, Function>)
-                return lua_isfunction(L, idx) ? Function::get_form_stack(L, idx) : throw std::exception();
+                return lua_isfunction(L, idx) ? Function::get_form_stack(L, idx) : throw lua_w::internal::Error("function", "Required value is not a function");
             else if constexpr (std::is_same_v<value_t, Table>)
-                return lua_istable(L, idx) ? Table::get_form_stack(L, idx) : throw std::exception();
+                return lua_istable(L, idx) ? Table::get_form_stack(L, idx) : throw lua_w::internal::Error("table", "Required value is not a table");
             else if constexpr (std::is_same_v <value_t, bool>)
-                return lua_isboolean(L, idx) ? lua_toboolean(L, idx) : throw std::exception();
+                return lua_isboolean(L, idx) ? lua_toboolean(L, idx) : throw lua_w::internal::Error("bool", "Required value is not a bool");
             else if constexpr (std::is_convertible_v<value_t, lua_Number>)
-                return lua_isnumber(L, idx) ? static_cast<TValue>(lua_tonumber(L, idx)) : throw std::exception();
+                return lua_isnumber(L, idx) ? static_cast<TValue>(lua_tonumber(L, idx)) : throw lua_w::internal::Error("number", "Required value is not numeric");
             else if constexpr (std::is_same_v<value_t, const char*>)
-                return lua_isstring(L, idx) ? lua_tostring(L, idx) : throw std::exception();
+                return lua_isstring(L, idx) ? lua_tostring(L, idx) : throw lua_w::internal::Error("string", "Required value is not a string");
             else if constexpr (std::is_same_v<value_t, std::string>)
-                return lua_isstring(L, idx) ? std::string(lua_tostring(L, idx)) : throw std::exception();
+                return lua_isstring(L, idx) ? std::string(lua_tostring(L, idx)) : throw lua_w::internal::Error("string", "Required value is not a string");
             else if constexpr (std::is_pointer_v<value_t>)
             {
                 #ifndef LUA_W_NO_PTR_SAFETY
@@ -396,7 +404,7 @@ namespace lua_w
                     if(ptr)
                         return ptr;
                     else
-                        throw std::exception();
+                        throw lua_w::internal::Error("pointer", "Can't convert to the specified type");
                 }
                 else // WARNING!: There is no way to ensure that the pointer is of the appropriate type (we can only check it it is no null)
                 #endif
@@ -444,9 +452,9 @@ namespace lua_w
                     return 1; // We leave one value on the stack
                 }
             }
-            catch(const std::exception& e)
+            catch (const lua_w::internal::Error& e)
             {
-                luaL_typeerror(L, argCounter - 1, "different type");
+                luaL_typeerror(L, argCounter - 1, e.type());
                 return 0;
             }
         }
@@ -516,7 +524,7 @@ namespace lua_w
             get_global<TValue>(L, globalName); 
             return true; 
         }
-        catch(const std::exception& e)
+        catch (const lua_w::internal::Error& e)
         {
             return false;
         }
@@ -626,9 +634,9 @@ namespace lua_w
                     return 1; 
                 }
             }
-            catch(const std::exception& e)
+            catch (const lua_w::internal::Error& e)
             {
-                luaL_typeerror(L, argCounter - 1, "different type");
+                luaL_typeerror(L, argCounter - 1, e.type());
                 return 0;
             }
         }
@@ -723,9 +731,9 @@ namespace lua_w
                         luaL_setmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
                         return 1;
                     }
-                    catch(const std::exception& e)
+                    catch (const lua_w::internal::Error& e)
                     {
-                        luaL_typeerror(L, argCounter - 2, "different type");
+                        luaL_typeerror(L, argCounter - 1, e.type());
                         return 0;
                     }
                 });
@@ -755,9 +763,9 @@ namespace lua_w
                         luaL_setmetatable(L, TClass::lua_type_name()); // Get the metatable and assign it to the created object
                         return 1;
                     }
-                    catch(const std::exception& e)
+                    catch (const lua_w::internal::Error& e)
                     {
-                        luaL_typeerror(L, argCounter - 2, "different type");
+                        luaL_typeerror(L, argCounter - 1, e.type());
                         return 0;
                     }
                 });
@@ -964,9 +972,9 @@ namespace lua_w
                         {
                             self->*memberPtr = internal::stack_get<TProp>(L, 2);
                         }
-                        catch(const std::exception& e)
+                        catch (const lua_w::internal::Error& e)
                         {
-                            luaL_typeerror(L, 2, "different type");
+                            luaL_typeerror(L, 2, e.type());
                         }
                         return 0;
                     }
@@ -1032,6 +1040,16 @@ void lua_w::init(lua_State* L)
 {
     lua_pushlightuserdata(L, (void*)L);
     lua_setfield(L, LUA_REGISTRYINDEX, "LUA_W_MAIN_STATE");    
+}
+
+lua_w::internal::Error::Error(const char* type, const char* message) : std::runtime_error(message)
+{
+    typeName = type ? type : "Unspecified";
+}
+
+const char* lua_w::internal::Error::type() const
+{
+    return typeName;
 }
 
 void lua_w::open_libs(lua_State* L, uint16_t libs) noexcept
