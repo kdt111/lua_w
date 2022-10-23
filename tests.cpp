@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cstring>
 #include <string>
+#include <cmath>
 
 #define LUA_W_IMPLEMENTATION
 #include "lua_w.h"
@@ -114,6 +115,9 @@ void should_handle_tables() {
     )") == LUA_OK);
 
     auto array = lua_w::get_global<lua_w::Table>(L, "array");
+
+    assert(array.length() == 5);
+
     for (int i = 1; i <= 5; i++ )
         assert(array.get<int>(i) == i);
     
@@ -138,11 +142,78 @@ void should_handle_tables() {
     TEARDOWN
 }
 
+class Base : public lua_w::LuaBaseObject {
+public:
+    static constexpr const char* lua_type_name() { return "Base"; }
+    virtual const char* get_name() const { return "Base"; }
+};
+
+class Vec2 : public Base {
+public:
+    static constexpr const char* lua_type_name() { return "Vec2"; }
+    static Vec2 one() { return Vec2(1, 1); }
+
+    double x, y;
+    Vec2() : x(0), y(0) {}
+    Vec2(double x, double y) : x(x), y(y) {}
+
+    const char* get_name() const override { return "Vec2"; }
+
+    double length() const {
+        return std::sqrt(x * x + y * y);
+    }
+
+    friend Vec2 operator+(const Vec2& lhs, const Vec2& rhs) {
+        return Vec2(lhs.x + rhs.x, lhs.y + rhs.y);
+    }
+
+    friend bool operator==(const Vec2& lhs, const Vec2& rhs) {
+        return (lhs.x == rhs.x) && (lhs.y == rhs.y);
+    }
+};
+
+void should_handle_native_types() {
+    SETUP
+
+    lua_w::register_type<Base>(L)
+        .add_method("get_name", &Base::get_name)
+        .add_constructor();
+
+    lua_w::register_type<Vec2>(L)
+        .add_parent_type<Base>()
+        .add_member("x", &Vec2::x)
+        .add_member("y", &Vec2::y)
+        .add_method("length", &Vec2::length)
+        .add_static_method("one", &Vec2::one)
+        .add_detected_operators()
+        .add_custom_and_default_constructors<double, double>();
+
+    assert(luaL_dostring(L, R"(
+        local b = Base()
+        assert(b:get_name() == "Base")
+
+        local v = Vec2(3, 4)
+        assert(v:x() == 3)
+        assert(v:y() == 4)
+        assert(v:length() == 5)
+
+        v:x(0)
+        v:y(0)
+        assert(v == Vec2())
+        assert((v + Vec2.one() + Vec2(2, 2)) == Vec2(3, 3))
+
+        assert(v:get_name() == "Vec2")
+    )") == LUA_OK);
+
+    TEARDOWN
+}
+
 int main() {
     should_handle_globals();
     should_handle_functions();
     should_handle_function_objects();
     should_throw_errors();
     should_handle_tables();
+    should_handle_native_types();
     std::cout << "Tests passed!\n";
 }
