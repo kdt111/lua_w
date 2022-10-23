@@ -38,6 +38,7 @@ SOFTWARE.
 #include <memory> // Used in: Table class and Function class
 #include <new> // Used in TypeWrapper (for inplace new)
 #include <utility> // Used in TypeWrapper (for checking if operator overloads exist)
+#include <string> // Used in stack_push and stack_get for C++ string support
 
 // Lua helper functions
 namespace lua_w
@@ -72,6 +73,9 @@ namespace lua_w
             utf8 = 1 << 9, 		all = ((1 << 16) - 1)
         };
     }
+
+    // Adds lua_w data to the created state
+    void init(lua_State* L);
     
     // Opens the passed in libs to the passed Lua state
     // If you want to include everything pass Libs::all
@@ -96,8 +100,18 @@ namespace lua_w
         struct LuaObjectReference
         {
             lua_State* L;
-            inline void* get_object_id() const noexcept { return (void*)&L; }
-            LuaObjectReference(lua_State* L) : L(L) {}
+            inline const void* get_object_id() const noexcept { return (void*)this; }
+            LuaObjectReference(lua_State* L)
+            {
+                lua_getfield(L, LUA_REGISTRYINDEX, "LUA_W_MAIN_STATE");
+                if (lua_islightuserdata(L, -1))
+                {
+                    this->L = (lua_State*)lua_touserdata(L, -1);
+                    lua_pop(L, 1);
+                }
+                else
+                    throw std::runtime_error("lua_w was not initialized");
+            }
             ~LuaObjectReference()
             {
                 lua_pushnil(L);
@@ -337,6 +351,8 @@ namespace lua_w
                 lua_pushnumber(L, static_cast<lua_Number>(value)); // Can push anything convertible to a lua_Number (double by default)
             else if constexpr (std::is_same_v<value_t, const char*> || std::is_same_v <value_t, char*>) // Lua makes a copy of the string
                 lua_pushstring(L, value);
+            else if constexpr (std::is_same_v<value_t, std::string>)
+                lua_pushstring(L, value.c_str());
             else if constexpr (std::is_pointer_v<value_t>)
                 lua_pushlightuserdata(L, (void*)value);
             else if constexpr (internal::has_lua_type_name_v<value_t>)
@@ -369,6 +385,8 @@ namespace lua_w
                 return lua_isnumber(L, idx) ? static_cast<TValue>(lua_tonumber(L, idx)) : throw std::exception();
             else if constexpr (std::is_same_v<value_t, const char*>)
                 return lua_isstring(L, idx) ? lua_tostring(L, idx) : throw std::exception();
+            else if constexpr (std::is_same_v<value_t, std::string>)
+                return lua_isstring(L, idx) ? std::string(lua_tostring(L, idx)) : throw std::exception();
             else if constexpr (std::is_pointer_v<value_t>)
             {
                 #ifndef LUA_W_NO_PTR_SAFETY
@@ -1010,6 +1028,12 @@ namespace lua_w
 #endif // End of LUA_W_INCLUDE_H
 
 #ifdef LUA_W_IMPLEMENTATION
+void lua_w::init(lua_State* L)
+{
+    lua_pushlightuserdata(L, (void*)L);
+    lua_setfield(L, LUA_REGISTRYINDEX, "LUA_W_MAIN_STATE");    
+}
+
 void lua_w::open_libs(lua_State* L, uint16_t libs) noexcept
 {
     int popCount = 0;
