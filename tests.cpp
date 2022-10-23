@@ -1,5 +1,4 @@
 #include <assert.h>
-#include <stdlib.h>
 #include <iostream>
 #include <cstring>
 #include <string>
@@ -74,7 +73,7 @@ void should_handle_function_objects() {
     )") == LUA_OK);
 
     auto func = lua_w::get_global<lua_w::Function>(L, "func");
-    assert(strcmp(func.call<const char*>(1, 2, 3), "Res = 6.0") == 0);
+    assert(std::strcmp(func.call<const char*>(1, 2, 3), "Res = 6.0") == 0);
 
     auto closure = lua_w::get_global<lua_w::Function>(L, "closure");
     auto inner = closure.call<lua_w::Function>();
@@ -85,9 +84,31 @@ void should_handle_function_objects() {
     TEARDOWN
 }
 
+void should_throw_errors() {
+    SETUP
+
+    assert(luaL_dostring(L, R"(
+        num = 7
+    )") == LUA_OK);
+
+    try {
+        auto b = lua_w::get_global<bool>(L, "num");
+    } catch (const lua_w::internal::Error& e) {
+        assert(std::strcmp(e.type(), "bool") == 0);
+    }
+
+    lua_w::register_function(L, "c_func", +[](int a) -> int { return a + a; });
+    assert(luaL_dostring(L, "c_func('String')") != LUA_OK);
+
+    assert(std::strcmp(R"warning([string "c_func('String')"]:1: bad argument #1 to 'c_func' (number expected, got string))warning", lua_tostring(L, -1)) == 0);
+
+    TEARDOWN
+}
+
 int main() {
     should_handle_globals();
     should_handle_functions();
     should_handle_function_objects();
+    should_throw_errors();
     std::cout << "Tests passed!\n";
 }
