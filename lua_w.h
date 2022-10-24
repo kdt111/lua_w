@@ -577,6 +577,17 @@ namespace lua_w
             }
         }
 
+        template<typename StoreType, typename MethodPtrType, class TClass, typename TRet, typename... TArgs>
+        void wrap_method(lua_State* L, MethodPtrType methodPtr) {
+            // Create a userdata store for a member function pointer
+            // They are bigger than regular pointers (so we store them in a struct)
+            // In GCC 11.2.0 a void* takes 8 bytes, and a member pointer takes 16 bytes, so we can't store this in a lightuserdata
+            auto store = (StoreType*)lua_newuserdatauv(L, sizeof(StoreType), 0);
+            store->ptr = methodPtr;
+            // We will call the method as a closure (so we can take the member method pointer)
+            lua_pushcclosure(L, &call_method_impl<StoreType, TClass, TRet, TArgs...>, 1);
+        }
+
         // Class for wrapping a type to be used in lua
         // You don't need to store objects of this class, just call the register_type function
         template<class TClass>
@@ -798,29 +809,14 @@ namespace lua_w
                 return *this;
             }
 
-            // Adds a custom definition for one of lua's metamethods. Has to use the lua_CFunction signature -> int(*)(lua_State*)
-            const TypeWrapper& add_metamethod(const char* methodName, lua_CFunction func) const noexcept {
-                luaL_getmetatable(L, TClass::lua_type_name());
-                lua_pushcfunction(L, func);
-                lua_setfield(L, -2, methodName);
-                lua_pop(L, 1);
-                return *this;
-            }
-
             // Registers a nonconst member function to lua
             template<typename TRet, typename... TArgs>
             const TypeWrapper& add_method(const char* name, internal::MemberFuncPtr_t<TClass, TRet, TArgs...> methodPtr) const noexcept {
-                using PtrStore_t = internal::MemberFuncPtrStore<TClass, TRet, TArgs...>;
+                using StoreType = internal::MemberFuncPtrStore<TClass, TRet, TArgs...>;
+                using MethodType = internal::MemberFuncPtr_t<TClass, TRet, TArgs...>;
                 luaL_getmetatable(L, TClass::lua_type_name());
                 lua_getfield(L, -1, "__index"); // __index field is the type table
-                // Create a userdata store for a member function pointer
-                // They are bigger than regular pointers (so we store them in a struct)
-                // In GCC 11.2.0 a void* takes 8 bytes, and a member pointer takes 16 bytes, so we can't store this in a lightuserdata
-                auto store = (PtrStore_t*)lua_newuserdatauv(L, sizeof(PtrStore_t), 0);
-                store->ptr = methodPtr;
-                // We will call the method as a closure (so we can take the member method pointer)
-                lua_pushcclosure(L, &call_method_impl<PtrStore_t, TClass, TRet, TArgs...>, 1);
-                // Raw set the method to the type table
+                wrap_method<StoreType, MethodType, TClass, TRet, TArgs...>(L, methodPtr);
                 lua_setfield(L, -2, name);
                 lua_pop(L, 2); // Pop the type table
                 return *this;
@@ -830,14 +826,37 @@ namespace lua_w
             template<typename TRet, typename... TArgs>
             const TypeWrapper& add_method(const char* name, internal::MemberConstFuncPtr_t<TClass, TRet, TArgs...> methodPtr) const noexcept {
                 // Everything works the same as the non-const version
-                using PtrStore_t = internal::MemberConstFuncPtrStore<TClass, TRet, TArgs...>;
+                using StoreType = internal::MemberConstFuncPtrStore<TClass, TRet, TArgs...>;
+                using MethodType = internal::MemberConstFuncPtr_t<TClass, TRet, TArgs...>;
                 luaL_getmetatable(L, TClass::lua_type_name());
                 lua_getfield(L, -1, "__index");
-                auto store = (PtrStore_t*)lua_newuserdatauv(L, sizeof(PtrStore_t), 0);
-                store->ptr = methodPtr;
-                lua_pushcclosure(L, &call_method_impl<PtrStore_t, TClass, TRet, TArgs...>, 1);
+                wrap_method<StoreType, MethodType, TClass, TRet, TArgs...>(L, methodPtr);
                 lua_setfield(L, -2, name);
                 lua_pop(L, 2);
+                return *this;
+            }
+
+            // Adds a custom definition for one of lua's metamethod
+            template<typename TRet, typename... TArgs>
+            const TypeWrapper& add_metamethod(const char* methodName, internal::MemberFuncPtr_t<TClass, TRet, TArgs...> methodPtr) const noexcept {
+                using StoreType = internal::MemberFuncPtrStore<TClass, TRet, TArgs...>;
+                using MethodType = internal::MemberFuncPtr_t<TClass, TRet, TArgs...>;
+                luaL_getmetatable(L, TClass::lua_type_name());
+                wrap_method<StoreType, MethodType, TClass, TRet, TArgs...>(L, methodPtr);
+                lua_setfield(L, -2, methodName);
+                lua_pop(L, 1);
+                return *this;
+            }
+
+            // Adds a custom definition for one of lua's metamethod (const method version)
+            template<typename TRet, typename... TArgs>
+            const TypeWrapper& add_metamethod(const char* methodName, internal::MemberConstFuncPtr_t<TClass, TRet, TArgs...> methodPtr) const noexcept {
+                using StoreType = internal::MemberConstFuncPtrStore<TClass, TRet, TArgs...>;
+                using MethodType = internal::MemberConstFuncPtr_t<TClass, TRet, TArgs...>;
+                luaL_getmetatable(L, TClass::lua_type_name());
+                wrap_method<StoreType, MethodType, TClass, TRet, TArgs...>(L, methodPtr);
+                lua_setfield(L, -2, methodName);
+                lua_pop(L, 1);
                 return *this;
             }
 

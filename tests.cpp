@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cstring>
 #include <string>
+#include <sstream>
 #include <cmath>
 
 #define LUA_W_IMPLEMENTATION
@@ -159,8 +160,18 @@ public:
 
     const char* get_name() const override { return "Vec2"; }
 
+    double sqr_length() const {
+        return x * x + y * y;
+    }
+
     double length() const {
-        return std::sqrt(x * x + y * y);
+        return std::sqrt(sqr_length());
+    }
+
+    std::string tostring() const {
+        std::stringstream stream;
+        stream << '(' << x << ", " << y << ')';
+        return stream.str();
     }
 
     friend Vec2 operator+(const Vec2& lhs, const Vec2& rhs) {
@@ -183,19 +194,24 @@ void should_handle_native_types() {
         .add_parent_type<Base>()
         .add_member("x", &Vec2::x)
         .add_member("y", &Vec2::y)
-        .add_method("length", &Vec2::length)
+        .add_method("sqr_length", &Vec2::sqr_length)
+        .add_metamethod("__len", &Vec2::length)
+        .add_metamethod("__tostring", &Vec2::tostring)
         .add_static_method("one", &Vec2::one)
         .add_detected_operators()
         .add_custom_and_default_constructors<double, double>();
 
-    assert(luaL_dostring(L, R"(
+    assert(luaL_dostring(L, R"script(
         local b = Base()
         assert(b:get_name() == "Base")
 
         local v = Vec2(3, 4)
         assert(v:x() == 3)
         assert(v:y() == 4)
-        assert(v:length() == 5)
+        
+        assert(v:sqr_length() == 25)
+        assert(#v == 5)
+        assert(tostring(v) == "(3, 4)")
 
         v:x(0)
         v:y(0)
@@ -203,7 +219,7 @@ void should_handle_native_types() {
         assert((v + Vec2.one() + Vec2(2, 2)) == Vec2(3, 3))
 
         assert(v:get_name() == "Vec2")
-    )") == LUA_OK);
+    )script") == LUA_OK);
 
     TEARDOWN
 }
