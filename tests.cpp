@@ -17,6 +17,8 @@
 #define TEARDOWN }              \
                  lua_close(L);  \
 
+#define RUN_TEST(test) (test(), (std::cout << "Test: " << #test << " finished!\n"))
+
 void should_handle_globals() {
     SETUP
 
@@ -204,8 +206,11 @@ void should_handle_native_types() {
     assert(luaL_dostring(L, R"script(
         local b = Base()
         assert(b:get_name() == "Base")
+        assert(type(b) == "Base")
 
         local v = Vec2(3, 4)
+        assert(type(v) == "Vec2")
+
         assert(v:x() == 3)
         assert(v:y() == 4)
         
@@ -225,11 +230,11 @@ void should_handle_native_types() {
 }
 
 int main() {
-    should_handle_globals();
-    should_handle_functions();
-    should_handle_function_objects();
-    should_throw_errors();
-    should_handle_tables();
-    should_handle_native_types();
+    RUN_TEST(should_handle_globals);
+    RUN_TEST(should_handle_functions);
+    RUN_TEST(should_handle_function_objects);
+    RUN_TEST(should_throw_errors);
+    RUN_TEST(should_handle_tables);
+    RUN_TEST(should_handle_native_types);
     std::cout << "Tests passed!\n";
 }
