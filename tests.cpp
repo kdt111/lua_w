@@ -19,19 +19,21 @@
 
 #define RUN_TEST(test) (test(), (std::cout << "Test: " << #test << " finished!\n"))
 
+#define ASSERT_SCRIPT(script) assert(luaL_dostring(L, (script)) == LUA_OK)
+
 void should_handle_globals() {
     SETUP
 
     lua_w::set_global(L, "num", 22);
     lua_w::set_global(L, "str", "C++ string");
 
-    assert(luaL_dostring(L, R"(
+    ASSERT_SCRIPT(R"(
         assert(num == 22)
         assert(str == "C++ string")
 
         lua_num = 17
         lua_str = "Lua string"
-    )") == LUA_OK);
+    )");
 
     assert(lua_w::get_global<double>(L, "lua_num") == 17);
     assert(std::strcmp(lua_w::get_global<const char*>(L, "lua_str"), "Lua string") == 0);
@@ -46,13 +48,13 @@ void should_handle_functions() {
        return (a + b) * 2;  
     });
 
-    assert(luaL_dostring(L, R"(
+    ASSERT_SCRIPT(R"(
         assert(c_func(3, 4) == (3 + 4) * 2)
 
         function lua_func(a)
             return 512 + a;
         end
-    )") == LUA_OK);
+    )");
 
     assert(lua_w::call_lua_function<double>(L, "lua_func", 10.0) == 522);
 
@@ -62,7 +64,7 @@ void should_handle_functions() {
 void should_handle_function_objects() {
     SETUP
 
-    assert(luaL_dostring(L, R"(
+    ASSERT_SCRIPT(R"(
     function func(a, b, c)
         return "Res = "..(a + b + c)
     end
@@ -74,7 +76,7 @@ void should_handle_function_objects() {
             return num
         end) 
     end
-    )") == LUA_OK);
+    )");
 
     auto func = lua_w::get_global<lua_w::Function>(L, "func");
     assert(std::strcmp(func.call<const char*>(1, 2, 3), "Res = 6.0") == 0);
@@ -91,9 +93,9 @@ void should_handle_function_objects() {
 void should_throw_errors() {
     SETUP
 
-    assert(luaL_dostring(L, R"(
+    ASSERT_SCRIPT(R"(
         num = 7
-    )") == LUA_OK);
+    )");
 
     try {
         auto b = lua_w::get_global<bool>(L, "num");
@@ -102,6 +104,7 @@ void should_throw_errors() {
     }
 
     lua_w::register_function(L, "c_func", +[](int a) -> int { return a + a; });
+    // This should fail, so we invert the condition
     assert(luaL_dostring(L, "c_func('String')") != LUA_OK);
 
     assert(std::strcmp(R"warning([string "c_func('String')"]:1: bad argument #1 to 'c_func' (number expected, got string))warning", lua_tostring(L, -1)) == 0);
@@ -112,10 +115,10 @@ void should_throw_errors() {
 void should_handle_tables() {
     SETUP
 
-    assert(luaL_dostring(L, R"(
+    ASSERT_SCRIPT(R"(
         array = {1, 2, 3, 4, 5}
         dict = { one = 1, two = 2, three = 3, other = "A string" }
-    )") == LUA_OK);
+    )");
 
     auto array = lua_w::get_global<lua_w::Table>(L, "array");
 
@@ -137,10 +140,10 @@ void should_handle_tables() {
     dict.set("four", 4);
     dict.set(70, "A string value");
 
-    assert(luaL_dostring(L, R"(
+    ASSERT_SCRIPT(R"(
         assert(dict.four == 4)
         assert(dict[70] == "A string value")
-    )") == LUA_OK);
+    )");
 
     TEARDOWN
 }
@@ -203,7 +206,7 @@ void should_handle_native_types() {
         .add_detected_operators()
         .add_custom_and_default_constructors<double, double>();
 
-    assert(luaL_dostring(L, R"script(
+    ASSERT_SCRIPT(R"script(
         local b = Base()
         assert(b:get_name() == "Base")
         assert(type(b) == "Base")
@@ -224,7 +227,7 @@ void should_handle_native_types() {
         assert((v + Vec2.one() + Vec2(2, 2)) == Vec2(3, 3))
 
         assert(v:get_name() == "Vec2")
-    )script") == LUA_OK);
+    )script");
 
     TEARDOWN
 }
